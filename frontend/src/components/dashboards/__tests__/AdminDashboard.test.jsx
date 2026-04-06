@@ -98,7 +98,7 @@ describe("AdminDashboard", () => {
     return render(
       <BrowserRouter>
         <AdminDashboard />
-      </BrowserRouter>
+      </BrowserRouter>,
     );
   };
 
@@ -208,7 +208,7 @@ describe("AdminDashboard", () => {
       expect(userApi.create).toHaveBeenCalledWith({
         email: "newuser@test.com",
         password: "password123",
-        is_active: true,
+        isActive: true,
       });
     });
   });
@@ -279,13 +279,12 @@ describe("AdminDashboard", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText("Some dashboard data failed to load")
+        screen.getByText("Some dashboard data failed to load"),
       ).toBeInTheDocument();
     });
   });
 
   it("should handle user deletion", async () => {
-    window.confirm = vi.fn(() => true);
     userApi.remove.mockResolvedValue({ data: {} });
 
     renderDashboard();
@@ -298,8 +297,11 @@ describe("AdminDashboard", () => {
     const deleteButtons = screen.getAllByText("Delete");
     fireEvent.click(deleteButtons[0]);
 
+    const confirmDeleteButton = await screen.findByText("Delete user");
+    fireEvent.click(confirmDeleteButton);
+
     await waitFor(() => {
-      expect(userApi.remove).toHaveBeenCalled();
+      expect(userApi.remove).toHaveBeenCalledWith(1);
     });
   });
 

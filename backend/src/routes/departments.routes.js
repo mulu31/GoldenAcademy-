@@ -1,13 +1,16 @@
 import { Router } from "express";
-import { 
-  createDepartment, 
-  updateDepartment, 
-  getDepartmentById, 
-  deleteDepartment 
+import {
+  createDepartment,
+  updateDepartment,
+  getDepartmentById,
+  deleteDepartment,
 } from "../validations/departments.validation.js";
 import { departmentsController } from "../controllers/departments.controller.js";
 import { authenticate } from "../middlewares/auth.middleware.js";
-import { authorize } from "../middlewares/authorize.middleware.js";
+import {
+  authorize,
+  authorizeDepartmentSelf,
+} from "../middlewares/authorize.middleware.js";
 import { validateRequest } from "../middlewares/validate.middleware.js";
 import { auditLog } from "../middlewares/audit.middleware.js";
 
@@ -38,9 +41,10 @@ router.post(
 // Update department - SYSTEM_ADMIN only
 router.put(
   "/:id",
-  authorize("SYSTEM_ADMIN"),
+  authorize("SYSTEM_ADMIN", "DEPARTMENT_ADMIN"),
   updateDepartment,
   validateRequest,
+  authorizeDepartmentSelf,
   auditLog("UPDATE", "DEPARTMENT"),
   departmentsController.update,
 );

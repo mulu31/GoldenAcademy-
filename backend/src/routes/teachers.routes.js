@@ -1,7 +1,10 @@
 import { Router } from "express";
 import { teachersController } from "../controllers/teachers.controller.js";
 import { authenticate } from "../middlewares/auth.middleware.js";
-import { authorize, authorizeDepartmentAdmin } from "../middlewares/authorize.middleware.js";
+import {
+  authorize,
+  authorizeDepartmentAdmin,
+} from "../middlewares/authorize.middleware.js";
 import { validateRequest } from "../middlewares/validate.middleware.js";
 import { auditLog } from "../middlewares/audit.middleware.js";
 import {
@@ -9,7 +12,7 @@ import {
   updateTeacher,
   getTeacherById,
   deleteTeacher,
-  assignTeacherToSubject
+  assignTeacherToSubject,
 } from "../validations/teachers.validation.js";
 
 const router = Router();
@@ -21,47 +24,42 @@ router.use(authenticate);
 router.get("/", teachersController.list);
 
 // Get teacher by ID
-router.get(
-  "/:id",
-  getTeacherById,
-  validateRequest,
-  teachersController.getById
-);
+router.get("/:id", getTeacherById, validateRequest, teachersController.getById);
 
 // Get teacher assignments
 router.get(
   "/:id/assignments",
   validateRequest,
-  teachersController.getAssignments
+  teachersController.getAssignments,
 );
 
 // Get teacher homeroom class
 router.get(
   "/:id/homeroom-class",
   validateRequest,
-  teachersController.getHomeroomClass
+  teachersController.getHomeroomClass,
 );
 
 // Create teacher
 router.post(
   "/",
-  authorize("SYSTEM_ADMIN", "DEPARTMENT_ADMIN"),
+  authorize("SYSTEM_ADMIN", "DEPARTMENT_ADMIN", "REGISTRAR"),
   createTeacher,
   validateRequest,
   authorizeDepartmentAdmin,
   auditLog("CREATE", "TEACHER"),
-  teachersController.create
+  teachersController.create,
 );
 
 // Update teacher
 router.put(
   "/:id",
-  authorize("SYSTEM_ADMIN", "DEPARTMENT_ADMIN"),
+  authorize("SYSTEM_ADMIN", "DEPARTMENT_ADMIN", "REGISTRAR"),
   updateTeacher,
   validateRequest,
   authorizeDepartmentAdmin,
   auditLog("UPDATE", "TEACHER"),
-  teachersController.update
+  teachersController.update,
 );
 
 // Delete teacher
@@ -71,7 +69,7 @@ router.delete(
   deleteTeacher,
   validateRequest,
   auditLog("DELETE", "TEACHER"),
-  teachersController.remove
+  teachersController.remove,
 );
 
 // Assign teacher to subject
@@ -82,7 +80,7 @@ router.post(
   validateRequest,
   authorizeDepartmentAdmin,
   auditLog("ASSIGN_TEACHER", "TEACHER_ASSIGNMENT"),
-  teachersController.assignToSubject
+  teachersController.assignToSubject,
 );
 
 // Remove teacher from subject
@@ -92,7 +90,7 @@ router.delete(
   validateRequest,
   authorizeDepartmentAdmin,
   auditLog("REMOVE_TEACHER", "TEACHER_ASSIGNMENT"),
-  teachersController.removeFromSubject
+  teachersController.removeFromSubject,
 );
 
 export default router;

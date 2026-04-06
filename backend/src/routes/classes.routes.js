@@ -9,7 +9,9 @@ import {
   updateClass,
   publishResults,
   getClassById,
-  deleteClass
+  deleteClass,
+  addClassSubject,
+  removeClassSubject,
 } from "../validations/classes.validation.js";
 
 const router = Router();
@@ -20,11 +22,31 @@ router.use(authenticate);
 router.get("/", classesController.list);
 
 router.get(
-  "/:id",
+  "/:id/subjects",
   getClassById,
   validateRequest,
-  classesController.getById,
+  classesController.getSubjects,
 );
+
+router.post(
+  "/:id/subjects",
+  authorize("SYSTEM_ADMIN", "REGISTRAR", "DEPARTMENT_ADMIN"),
+  addClassSubject,
+  validateRequest,
+  auditLog("ADD_SUBJECT", "CLASS_SUBJECT"),
+  classesController.addSubject,
+);
+
+router.delete(
+  "/:id/subjects/:subjectId",
+  authorize("SYSTEM_ADMIN", "REGISTRAR", "DEPARTMENT_ADMIN"),
+  removeClassSubject,
+  validateRequest,
+  auditLog("REMOVE_SUBJECT", "CLASS_SUBJECT"),
+  classesController.removeSubject,
+);
+
+router.get("/:id", getClassById, validateRequest, classesController.getById);
 
 router.get(
   "/:id/marks-complete",

@@ -11,10 +11,10 @@ const createToken = (payload) =>
 export const register = async ({ email, password, roleName = "TEACHER" }) => {
   // Check if user already exists
   const existingResult = await pool.query(
-    'SELECT user_id FROM users WHERE email = $1',
-    [email]
+    "SELECT user_id FROM users WHERE email = $1",
+    [email],
   );
-  
+
   if (existingResult.rows.length > 0) {
     throw new ApiError(409, "Email already registered");
   }
@@ -24,10 +24,10 @@ export const register = async ({ email, password, roleName = "TEACHER" }) => {
 
   // Find role
   const roleResult = await pool.query(
-    'SELECT role_id FROM roles WHERE name = $1',
-    [roleName]
+    "SELECT role_id FROM roles WHERE name = $1",
+    [roleName],
   );
-  
+
   if (roleResult.rows.length === 0) {
     throw new ApiError(400, "Role does not exist");
   }
@@ -37,36 +37,36 @@ export const register = async ({ email, password, roleName = "TEACHER" }) => {
   // Create user with role assignment in a transaction
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
-    
+    await client.query("BEGIN");
+
     const userResult = await client.query(
-      'INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING user_id, email, is_active, created_at',
-      [email, passwordHash]
+      "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING user_id, email, is_active, created_at",
+      [email, passwordHash],
     );
-    
+
     const user = userResult.rows[0];
-    
+
     await client.query(
-      'INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)',
-      [user.user_id, roleId]
+      "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)",
+      [user.user_id, roleId],
     );
-    
-    await client.query('COMMIT');
-    
+
+    await client.query("COMMIT");
+
     const token = createToken({ user_id: user.user_id, email: user.email });
-    
-    return { 
-      token, 
+
+    return {
+      token,
       user: {
         user_id: user.user_id,
         email: user.email,
         is_active: user.is_active,
-        created_at: user.created_at
-      }
+        created_at: user.created_at,
+      },
     };
   } catch (error) {
-    await client.query('ROLLBACK');
-    handleDatabaseError(error, 'Email already registered');
+    await client.query("ROLLBACK");
+    handleDatabaseError(error, "Email already registered");
   } finally {
     client.release();
   }
@@ -74,7 +74,8 @@ export const register = async ({ email, password, roleName = "TEACHER" }) => {
 
 export const login = async ({ email, password }) => {
   // Fetch user with roles and teacher profile
-  const userResult = await pool.query(`
+  const userResult = await pool.query(
+    `
     SELECT 
       u.user_id, u.email, u.password_hash, u.is_active,
       json_agg(
@@ -89,14 +90,16 @@ export const login = async ({ email, password }) => {
     LEFT JOIN departments d ON t.department_id = d.department_id
     WHERE u.email = $1
     GROUP BY u.user_id, t.teacher_id, t.full_name, t.department_id, d.name, d.code
-  `, [email]);
+  `,
+    [email],
+  );
 
   if (userResult.rows.length === 0) {
     throw new ApiError(401, "Invalid email or password");
   }
 
   const user = userResult.rows[0];
-  
+
   if (!user.is_active) {
     throw new ApiError(403, "User account is inactive");
   }
@@ -108,12 +111,18 @@ export const login = async ({ email, password }) => {
   }
 
   // Extract roles
-  const roles = user.roles ? user.roles.map(r => r.name) : [];
+  const roles = user.roles
+    ? user.roles.map((r) => r?.name).filter(Boolean)
+    : [];
+
+  if (roles.length === 0 && user.teacher_id) {
+    roles.push("TEACHER");
+  }
 
   const token = createToken({
     user_id: user.user_id,
     email: user.email,
-    roles
+    roles,
   });
 
   return {
@@ -123,16 +132,20 @@ export const login = async ({ email, password }) => {
       email: user.email,
       is_active: user.is_active,
       roles,
-      teacher: user.teacher_id ? {
-        teacher_id: user.teacher_id,
-        full_name: user.full_name,
-        department_id: user.department_id,
-        department: user.department_id ? {
-          department_id: user.department_id,
-          name: user.department_name,
-          code: user.department_code
-        } : null
-      } : null
-    }
+      teacher: user.teacher_id
+        ? {
+            teacher_id: user.teacher_id,
+            full_name: user.full_name,
+            department_id: user.department_id,
+            department: user.department_id
+              ? {
+                  department_id: user.department_id,
+                  name: user.department_name,
+                  code: user.department_code,
+                }
+              : null,
+          }
+        : null,
+    },
   };
 };

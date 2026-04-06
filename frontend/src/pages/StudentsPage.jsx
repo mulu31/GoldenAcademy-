@@ -9,6 +9,7 @@ import Button from "../components/common/Button";
 import TableSection from "../components/common/TableSection";
 import { FileDown } from "lucide-react";
 import { useFetch } from "../hooks/useFetch";
+import { extractErrorMessage } from "../api/responseAdapter";
 import { exportRowsToPdf } from "../utils/exportPdf";
 import { notify } from "../utils/notifications";
 
@@ -17,28 +18,81 @@ const StudentsPage = () => {
 
   const studentsQuery = useFetch(() => studentApi.getAll(), []);
   const classesQuery = useFetch(() => classApi.getAll(), []);
+  const enrollmentsQuery = useFetch(
+    () => studentApi.getAllEnrollments({ page: 1, limit: 500 }),
+    [],
+    true,
+    { mode: "payload", initialData: { enrollments: [] } },
+  );
 
-  const classLookup = useMemo(
+  const latestEnrollmentByStudent = useMemo(() => {
+    const map = new Map();
+    const enrollments = enrollmentsQuery.data?.enrollments || [];
+
+    enrollments.forEach((enrollment) => {
+      const studentId =
+        enrollment.studentId ||
+        enrollment.student_id ||
+        enrollment.student?.studentId ||
+        enrollment.student?.student_id;
+
+      if (!studentId || map.has(String(studentId))) return;
+      map.set(String(studentId), enrollment);
+    });
+
+    return map;
+  }, [enrollmentsQuery.data]);
+
+  const studentsWithAssignment = useMemo(
     () =>
-      Object.fromEntries(
-        (classesQuery.data || []).map((item) => [
-          item.class_id,
-          `${item.class_name} (${item.grade})`,
-        ]),
-      ),
-    [classesQuery.data],
+      (studentsQuery.data || []).map((student) => {
+        const studentId = student.studentId || student.student_id;
+        const enrollment = latestEnrollmentByStudent.get(String(studentId));
+        const classData = enrollment?.class || {};
+        const termData = classData.term || {};
+
+        const section =
+          classData.className ||
+          classData.class_name ||
+          student.class_name ||
+          "-";
+        const classLevel = classData.grade || student.grade || "-";
+        const academicYear =
+          termData.academicYear || termData.academic_year || "-";
+        const semester = termData.semester || "-";
+
+        return {
+          ...student,
+          studentId,
+          studentSchoolId:
+            student.studentSchoolId || student.student_school_id || "-",
+          fullName: student.fullName || student.full_name || "-",
+          classDisplay:
+            classLevel === "-" && section === "-"
+              ? "-"
+              : `${classLevel} - ${section}`,
+          academicYear,
+          semester,
+          section,
+        };
+      }),
+    [latestEnrollmentByStudent, studentsQuery.data],
   );
 
   const handleCreateStudent = async (values) => {
     setSaving(true);
     try {
-      await studentApi.create(values);
+      await studentApi.create({
+        studentSchoolId: values.studentSchoolId,
+        fullName: values.fullName,
+        gender: values.gender,
+      });
       notify({ type: "success", message: "Student created" });
       await studentsQuery.refetch();
     } catch (error) {
       notify({
         type: "error",
-        message: error?.response?.data?.message || "Failed to create student",
+        message: extractErrorMessage(error, "Failed to create student"),
       });
     } finally {
       setSaving(false);
@@ -49,14 +103,15 @@ const StudentsPage = () => {
     setSaving(true);
     try {
       await studentApi.enroll({
-        student_id: Number(values.student_id),
-        class_id: Number(values.class_id),
+        studentId: Number(values.studentId),
+        classId: Number(values.classId),
       });
       notify({ type: "success", message: "Student enrolled" });
+      await enrollmentsQuery.refetch();
     } catch (error) {
       notify({
         type: "error",
-        message: error?.response?.data?.message || "Enrollment failed",
+        message: extractErrorMessage(error, "Enrollment failed"),
       });
     } finally {
       setSaving(false);
@@ -64,7 +119,7 @@ const StudentsPage = () => {
   };
 
   const handleExportStudents = async () => {
-    if (!studentsQuery.data?.length) {
+    if (!studentsWithAssignment.length) {
       notify({
         type: "warning",
         message: "No student data is available for export.",
@@ -75,18 +130,19 @@ const StudentsPage = () => {
     await exportRowsToPdf({
       fileName: "golden-high-school-students.pdf",
       title: "Golden High School - Student Directory",
-      subtitle: `Total records: ${studentsQuery.data.length}`,
+      subtitle: `Total records: ${studentsWithAssignment.length}`,
       columns: [
-        { header: "Student ID", accessor: (row) => row.student_school_id },
-        { header: "Full Name", accessor: (row) => row.full_name },
+        { header: "Student ID", accessor: (row) => row.studentSchoolId },
+        { header: "Full Name", accessor: (row) => row.fullName },
         { header: "Gender", accessor: (row) => row.gender },
+        { header: "Class", accessor: (row) => row.classDisplay || "-" },
         {
-          header: "Class",
-          accessor: (row) =>
-            row.class_name || classLookup[row.class_id] || row.class_id,
+          header: "Academic Year",
+          accessor: (row) => row.academicYear || "-",
         },
+        { header: "Section", accessor: (row) => row.section || "-" },
       ],
-      rows: studentsQuery.data,
+      rows: studentsWithAssignment,
     });
 
     notify({
@@ -102,7 +158,7 @@ const StudentsPage = () => {
           Register Student
         </h3>
         <StudentForm
-          initialValues={{ student_school_id: "", full_name: "", gender: "" }}
+          initialValues={{ studentSchoolId: "", fullName: "", gender: "" }}
           onSubmit={handleCreateStudent}
           loading={saving}
         />
@@ -132,10 +188,9 @@ const StudentsPage = () => {
         }
       >
         <StudentList
-          students={studentsQuery.data}
-          classLookup={classLookup}
-          loading={studentsQuery.loading}
-          error={studentsQuery.error}
+          students={studentsWithAssignment}
+          loading={studentsQuery.loading || enrollmentsQuery.loading}
+          error={studentsQuery.error || enrollmentsQuery.error}
         />
       </TableSection>
     </PageLayout>

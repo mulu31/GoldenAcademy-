@@ -5,7 +5,7 @@ import Button from "../common/Button";
 
 const EnrollmentForm = ({ students = [], classes = [], onSubmit, loading }) => {
   const form = useForm({
-    initialValues: { student_id: "", class_id: "" },
+    initialValues: { studentId: "", classId: "" },
     validate: (values) => validateForm("enrollment", values),
     onSubmit,
   });
@@ -17,25 +17,30 @@ const EnrollmentForm = ({ students = [], classes = [], onSubmit, loading }) => {
     >
       <Select
         label="Student"
-        name="student_id"
-        value={form.values.student_id}
+        name="studentId"
+        value={form.values.studentId}
         onChange={form.handleChange}
         options={students.map((s) => ({
-          value: s.student_id,
-          label: s.full_name || s.student_school_id,
+          value: s.studentId || s.student_id,
+          label:
+            s.fullName ||
+            s.full_name ||
+            s.studentSchoolId ||
+            s.student_school_id,
         }))}
-        error={form.errors.student_id}
+        error={form.errors.studentId}
       />
       <Select
         label="Class"
-        name="class_id"
-        value={form.values.class_id}
+        name="classId"
+        value={form.values.classId}
         onChange={form.handleChange}
         options={classes.map((c) => ({
-          value: c.class_id,
-          label: `${c.class_name} (${c.grade})`,
+          value: c.classId || c.class_id,
+          label:
+            `${c.grade || "Class"} - ${c.className || c.class_name || "Section"} (${c.term?.academicYear || c.term?.academic_year || "Year"} ${c.term?.semester || ""})`.trim(),
         }))}
-        error={form.errors.class_id}
+        error={form.errors.classId}
       />
       <div className="flex items-end">
         <Button type="submit" loading={loading} className="w-full">

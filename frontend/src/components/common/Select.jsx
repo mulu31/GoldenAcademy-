@@ -6,6 +6,7 @@ const Select = ({
   options = [],
   error,
   required = false,
+  disabled = false,
 }) => {
   return (
     <div className="space-y-1">
@@ -23,6 +24,7 @@ const Select = ({
         name={name}
         value={value ?? ""}
         onChange={onChange}
+        disabled={disabled}
         className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-800 outline-none transition duration-200 ${
           error
             ? "border-rose-400"

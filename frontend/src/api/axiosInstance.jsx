@@ -1,4 +1,5 @@
 import axios from "axios";
+import { expandCaseAliases } from "./caseCompat";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api";
@@ -28,13 +29,27 @@ axiosInstance.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
+
+    if (config.data && typeof config.data === "object") {
+      config.data = expandCaseAliases(config.data);
+    }
+
+    if (config.params && typeof config.params === "object") {
+      config.params = expandCaseAliases(config.params);
+    }
+
     return config;
   },
   (error) => Promise.reject(error),
 );
 
 axiosInstance.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    if (response?.data && typeof response.data === "object") {
+      response.data = expandCaseAliases(response.data);
+    }
+    return response;
+  },
   async (error) => {
     const originalRequest = error.config;
     const refreshToken = localStorage.getItem("refreshToken");

@@ -19,7 +19,7 @@ router.get(
   "/:id",
   marksValidation.getMarkById,
   validateRequest,
-  marksController.getById
+  marksController.getById,
 );
 
 // Get marks by class ID
@@ -27,7 +27,7 @@ router.get(
   "/class/:classId",
   marksValidation.getClassMarks,
   validateRequest,
-  marksController.getByClassId
+  marksController.getByClassId,
 );
 
 // Get marks by student ID
@@ -35,14 +35,15 @@ router.get(
   "/student/:studentId",
   marksValidation.getStudentMarks,
   validateRequest,
-  marksController.getByStudentId
+  marksController.getByStudentId,
 );
 
 // Get marks by teacher ID
 router.get(
   "/teacher/:teacherId",
+  authorize("SYSTEM_ADMIN", "DEPARTMENT_ADMIN", "REGISTRAR", "TEACHER"),
   validateRequest,
-  marksController.getByTeacherId
+  marksController.getByTeacherId,
 );
 
 // Submit mark (teacher) - authorization checked in service layer
@@ -52,7 +53,7 @@ router.post(
   marksValidation.submitMarks,
   validateRequest,
   auditLog("SUBMIT_MARKS", "MARKS"),
-  marksController.submitMark
+  marksController.submitMark,
 );
 
 // Update mark by teacher - authorization checked in service layer
@@ -62,7 +63,7 @@ router.put(
   marksValidation.updateMark,
   validateRequest,
   auditLog("UPDATE_MARKS", "MARKS"),
-  marksController.updateMarkByTeacher
+  marksController.updateMarkByTeacher,
 );
 
 // Create mark (admin/registrar)
@@ -72,7 +73,7 @@ router.post(
   marksValidation.submitMarks,
   validateRequest,
   auditLog("CREATE_MARKS", "MARKS"),
-  marksController.create
+  marksController.create,
 );
 
 // Update mark (admin/registrar)
@@ -82,7 +83,7 @@ router.put(
   marksValidation.updateMark,
   validateRequest,
   auditLog("UPDATE_MARKS", "MARKS"),
-  marksController.update
+  marksController.update,
 );
 
 // Delete mark (admin only)
@@ -92,7 +93,7 @@ router.delete(
   marksValidation.getMarkById,
   validateRequest,
   auditLog("DELETE_MARKS", "MARKS"),
-  marksController.remove
+  marksController.remove,
 );
 
 export default router;

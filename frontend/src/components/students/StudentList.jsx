@@ -1,12 +1,7 @@
 import Table from "../common/Table";
 import Loader from "../common/Loader";
 
-const StudentList = ({
-  students = [],
-  classLookup = {},
-  loading = false,
-  error = "",
-}) => {
+const StudentList = ({ students = [], loading = false, error = "" }) => {
   if (loading) return <Loader text="Loading students..." />;
 
   return (
@@ -14,15 +9,36 @@ const StudentList = ({
       rows={students}
       error={error}
       columns={[
-        { key: "student_id", title: "ID" },
-        { key: "student_school_id", title: "School ID" },
-        { key: "full_name", title: "Name" },
+        {
+          key: "studentId",
+          title: "ID",
+          render: (row) => row.studentId || row.student_id || "-",
+        },
+        {
+          key: "studentSchoolId",
+          title: "School ID",
+          render: (row) => row.studentSchoolId || row.student_school_id || "-",
+        },
+        {
+          key: "fullName",
+          title: "Name",
+          render: (row) => row.fullName || row.full_name || "-",
+        },
         { key: "gender", title: "Gender" },
         {
-          key: "class_id",
+          key: "classDisplay",
           title: "Class",
-          render: (row) =>
-            row.class_name || classLookup[row.class_id] || row.class_id || "-",
+          render: (row) => row.classDisplay || row.class_display || "-",
+        },
+        {
+          key: "academicYear",
+          title: "Academic Year",
+          render: (row) => row.academicYear || row.academic_year || "-",
+        },
+        {
+          key: "section",
+          title: "Section",
+          render: (row) => row.section || "-",
         },
       ]}
     />

@@ -1,72 +1,104 @@
 import { teachersService } from "../services/teachers.service.js";
 import { catchAsync } from "../utils/catchAsync.js";
-import { sendResponse as successResponse } from "../utils/response.js";
+import { sendResponse } from "../utils/response.js";
+import { ApiError } from "../utils/ApiError.js";
 
 export const teachersController = {
   list: catchAsync(async (req, res) => {
-    const { departmentId } = req.query;
-    
+    const departmentId = req.query.departmentId ?? req.query.department_id;
+
     // If user is DEPARTMENT_ADMIN, filter by their department
     const filters = {};
-    if (req.user.roles.includes('DEPARTMENT_ADMIN')) {
+    if (req.user.roles.includes("DEPARTMENT_ADMIN")) {
       filters.departmentId = req.user.departmentId;
     } else if (departmentId) {
       filters.departmentId = departmentId;
     }
-    
+
     const teachers = await teachersService.list(filters);
-    successResponse(res, teachers, 'Teachers retrieved successfully');
+    return sendResponse(res, 200, "Teachers retrieved successfully", teachers);
   }),
 
   getById: catchAsync(async (req, res) => {
     const teacher = await teachersService.getById(req.params.id);
-    successResponse(res, teacher, 'Teacher retrieved successfully');
+    return sendResponse(res, 200, "Teacher retrieved successfully", teacher);
   }),
 
   create: catchAsync(async (req, res) => {
+    const requestedRole = req.body.roleName ?? req.body.role_name ?? "TEACHER";
+    if (
+      req.user.roles.includes("DEPARTMENT_ADMIN") &&
+      requestedRole !== "TEACHER"
+    ) {
+      throw new ApiError(
+        403,
+        "Department admins can only create teacher accounts with TEACHER role",
+      );
+    }
+
     const teacher = await teachersService.create(req.body);
-    successResponse(res, teacher, 'Teacher created successfully', 201);
+    return sendResponse(res, 201, "Teacher created successfully", teacher);
   }),
 
   update: catchAsync(async (req, res) => {
     const teacher = await teachersService.update(req.params.id, req.body);
-    successResponse(res, teacher, 'Teacher updated successfully');
+    return sendResponse(res, 200, "Teacher updated successfully", teacher);
   }),
 
   remove: catchAsync(async (req, res) => {
     await teachersService.remove(req.params.id);
-    successResponse(res, null, 'Teacher deleted successfully');
+    return sendResponse(res, 200, "Teacher deleted successfully", null);
   }),
 
   assignToSubject: catchAsync(async (req, res) => {
     const { id } = req.params;
-    const { classSubjectId } = req.body;
-    
+    const classSubjectId = req.body.classSubjectId ?? req.body.class_subject_id;
+
     const assignment = await teachersService.assignToSubject(
       id,
       classSubjectId,
-      req.user
+      req.user,
     );
-    
-    successResponse(res, assignment, 'Teacher assigned to subject successfully', 201);
+
+    return sendResponse(
+      res,
+      201,
+      "Teacher assigned to subject successfully",
+      assignment,
+    );
   }),
 
   removeFromSubject: catchAsync(async (req, res) => {
     const { id, classSubjectId } = req.params;
-    
+
     await teachersService.removeFromSubject(id, classSubjectId);
-    successResponse(res, null, 'Teacher removed from subject successfully');
+    return sendResponse(
+      res,
+      200,
+      "Teacher removed from subject successfully",
+      null,
+    );
   }),
 
   getAssignments: catchAsync(async (req, res) => {
     const { id } = req.params;
     const assignments = await teachersService.getAssignments(id);
-    successResponse(res, assignments, 'Teacher assignments retrieved successfully');
+    return sendResponse(
+      res,
+      200,
+      "Teacher assignments retrieved successfully",
+      assignments,
+    );
   }),
 
   getHomeroomClass: catchAsync(async (req, res) => {
     const { id } = req.params;
     const homeroomClass = await teachersService.getHomeroomClass(id);
-    successResponse(res, homeroomClass, 'Homeroom class retrieved successfully');
-  })
+    return sendResponse(
+      res,
+      200,
+      "Homeroom class retrieved successfully",
+      homeroomClass,
+    );
+  }),
 };

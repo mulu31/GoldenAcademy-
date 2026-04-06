@@ -37,4 +37,37 @@ export const classesController = {
     const data = await classesService.checkMarksComplete(req.params.id);
     return sendResponse(res, 200, "Mark completion status retrieved", data);
   }),
+
+  getSubjects: catchAsync(async (req, res) => {
+    const data = await classesService.getSubjects(req.params.id);
+    return sendResponse(
+      res,
+      200,
+      "Class subjects retrieved successfully",
+      data,
+    );
+  }),
+
+  addSubject: catchAsync(async (req, res) => {
+    const subjectId = req.body.subjectId ?? req.body.subject_id;
+    const data = await classesService.addSubject(
+      req.params.id,
+      subjectId,
+      req.user,
+    );
+    return sendResponse(res, 201, "Subject added to class successfully", data);
+  }),
+
+  removeSubject: catchAsync(async (req, res) => {
+    const data = await classesService.removeSubject(
+      req.params.id,
+      req.params.subjectId,
+    );
+    return sendResponse(
+      res,
+      200,
+      "Subject removed from class successfully",
+      data,
+    );
+  }),
 };

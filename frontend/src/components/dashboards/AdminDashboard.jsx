@@ -10,11 +10,13 @@ import Table from "../common/Table";
 import TableSection from "../common/TableSection";
 import StateView from "../common/StateView";
 import Modal from "../common/Modal";
+import DeleteConfirmModal from "../common/DeleteConfirmModal";
 import Button from "../common/Button";
 import Input from "../common/Input";
 import Select from "../common/Select";
 import { useFetch } from "../../hooks/useFetch";
 import { useForm } from "../../hooks/useForm";
+import { useAuth } from "../../hooks/useAuth";
 import { notify } from "../../utils/notifications";
 
 const actionLinks = [
@@ -41,6 +43,7 @@ const actionLinks = [
 ];
 
 const AdminDashboard = () => {
+  const { user: authUser } = useAuth();
   const [userModalOpen, setUserModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
   const [roleModalOpen, setRoleModalOpen] = useState(false);
@@ -49,13 +52,21 @@ const AdminDashboard = () => {
   const [editingDepartment, setEditingDepartment] = useState(null);
   const [auditModalOpen, setAuditModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [confirmModalOpen, setConfirmModalOpen] = useState(false);
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
 
   const usersQuery = useFetch(() => userApi.getWithRoles(), []);
   const departmentsQuery = useFetch(() => departmentApi.getAll(), []);
   const termsQuery = useFetch(() => termApi.getAll(), []);
   const classesQuery = useFetch(() => classApi.getAll(), []);
   const rolesQuery = useFetch(() => roleApi.getAll(), []);
-  const auditQuery = useFetch(() => auditApi.getAll({ page: 1, limit: 20 }), []);
+  const auditQuery = useFetch(
+    () => auditApi.getAll({ page: 1, limit: 20 }),
+    [],
+    true,
+    { mode: "payload", initialData: { logs: [] } },
+  );
 
   const loading =
     usersQuery.loading ||
@@ -79,15 +90,21 @@ const AdminDashboard = () => {
     },
     onSubmit: async (values) => {
       setSubmitting(true);
+      const isActive =
+        values.is_active === true || String(values.is_active) === "true";
       try {
         if (editingUser) {
           await userApi.update(editingUser.user_id, {
             email: values.email,
-            is_active: values.is_active,
+            isActive,
           });
           notify({ type: "success", message: "User updated successfully" });
         } else {
-          await userApi.create(values);
+          await userApi.create({
+            email: values.email,
+            password: values.password,
+            isActive,
+          });
           notify({ type: "success", message: "User created successfully" });
         }
         setUserModalOpen(false);
@@ -97,7 +114,11 @@ const AdminDashboard = () => {
       } catch (error) {
         notify({
           type: "error",
-          message: error.response?.data?.error || "Failed to save user",
+          message:
+            error.response?.data?.error ||
+            error.response?.data?.message ||
+            error.message ||
+            "Failed to save user",
         });
       } finally {
         setSubmitting(false);
@@ -164,7 +185,7 @@ const AdminDashboard = () => {
       setSubmitting(true);
       try {
         await userApi.assignRole(selectedUser.user_id, {
-          role_id: parseInt(values.role_id),
+          roleId: parseInt(values.role_id),
         });
         notify({ type: "success", message: "Role assigned successfully" });
         setRoleModalOpen(false);
@@ -174,7 +195,11 @@ const AdminDashboard = () => {
       } catch (error) {
         notify({
           type: "error",
-          message: error.response?.data?.error || "Failed to assign role",
+          message:
+            error.response?.data?.error ||
+            error.response?.data?.message ||
+            error.message ||
+            "Failed to assign role",
         });
       } finally {
         setSubmitting(false);
@@ -206,7 +231,17 @@ const AdminDashboard = () => {
     [termsQuery.data],
   );
 
-  const activeUsers = (usersQuery.data || []).filter(
+  const normalizedUsers = useMemo(
+    () =>
+      (usersQuery.data || []).map((user) => ({
+        ...user,
+        user_id: user.user_id ?? user.userId ?? null,
+        is_active: user.is_active ?? user.isActive ?? true,
+      })),
+    [usersQuery.data],
+  );
+
+  const activeUsers = normalizedUsers.filter(
     (user) => user.is_active !== false,
   ).length;
 
@@ -214,7 +249,7 @@ const AdminDashboard = () => {
     (classRow) => !classRow.results_published,
   );
 
-  const recentUsers = [...(usersQuery.data || [])]
+  const recentUsers = [...normalizedUsers]
     .sort((a, b) => Number(b.user_id) - Number(a.user_id))
     .slice(0, 8)
     .map((user) => ({
@@ -242,6 +277,8 @@ const AdminDashboard = () => {
     label: role.name,
   }));
 
+  const currentUserId = authUser?.user_id ?? authUser?.userId;
+
   const refreshAll = async () => {
     await Promise.allSettled([
       usersQuery.refetch(),
@@ -253,47 +290,94 @@ const AdminDashboard = () => {
   };
 
   const handleEditUser = (user) => {
-    setEditingUser(user);
+    setEditingUser({
+      ...user,
+      user_id: user.user_id ?? user.userId,
+      is_active: user.is_active ?? user.isActive ?? true,
+    });
     userForm.setValues({
       email: user.email,
       password: "",
-      is_active: user.is_active !== false,
+      is_active: (user.is_active ?? user.isActive ?? true) !== false,
     });
     setUserModalOpen(true);
   };
 
-  const handleDeleteUser = async (userId) => {
-    if (!window.confirm("Are you sure you want to delete this user?")) return;
-    try {
-      await userApi.remove(userId);
-      notify({ type: "success", message: "User deleted successfully" });
-      usersQuery.refetch();
-    } catch (error) {
+  const openDeleteModal = (target) => {
+    setDeleteTarget(target);
+    setConfirmModalOpen(true);
+  };
+
+  const closeDeleteModal = () => {
+    if (deleteSubmitting) return;
+    setConfirmModalOpen(false);
+    setDeleteTarget(null);
+  };
+
+  const handleDeleteUser = (userId, email) => {
+    if (!userId) {
       notify({
         type: "error",
-        message: error.response?.data?.error || "Failed to delete user",
+        message: "Missing user ID. Please refresh and try again.",
       });
+      return;
     }
+
+    openDeleteModal({
+      type: "user",
+      userId,
+      title: "Delete this user account?",
+      description: `You are about to remove ${email || `user #${userId}`}. This action cannot be undone.`,
+      confirmLabel: "Delete user",
+      theme: "danger",
+      notice: "This action is permanent and may affect linked records.",
+    });
   };
 
   const handleAssignRole = (user) => {
-    setSelectedUser(user);
+    if (String(user.user_id ?? user.userId) === String(currentUserId)) {
+      notify({
+        type: "warning",
+        message: "You cannot change your own role.",
+      });
+      return;
+    }
+
+    setSelectedUser({
+      ...user,
+      user_id: user.user_id ?? user.userId,
+    });
     roleForm.reset();
     setRoleModalOpen(true);
   };
 
-  const handleRemoveRole = async (userId, roleId) => {
-    if (!window.confirm("Are you sure you want to remove this role?")) return;
-    try {
-      await userApi.removeRole(userId, { role_id: roleId });
-      notify({ type: "success", message: "Role removed successfully" });
-      usersQuery.refetch();
-    } catch (error) {
+  const handleRemoveRole = (userId, roleId, email = "selected user") => {
+    if (String(userId) === String(currentUserId)) {
+      notify({
+        type: "warning",
+        message: "You cannot change your own role.",
+      });
+      return;
+    }
+
+    if (!userId || !roleId) {
       notify({
         type: "error",
-        message: error.response?.data?.error || "Failed to remove role",
+        message: "Missing role information. Please refresh and try again.",
       });
+      return;
     }
+
+    openDeleteModal({
+      type: "role",
+      userId,
+      roleId,
+      title: "Remove this role assignment?",
+      description: `This will remove role #${roleId} from ${email}.`,
+      confirmLabel: "Remove role",
+      theme: "warning",
+      notice: "Access permissions will change immediately after confirmation.",
+    });
   };
 
   const handleEditDepartment = (department) => {
@@ -305,18 +389,64 @@ const AdminDashboard = () => {
     setDepartmentModalOpen(true);
   };
 
-  const handleDeleteDepartment = async (departmentId) => {
-    if (!window.confirm("Are you sure you want to delete this department?"))
+  const handleDeleteDepartment = (departmentId, departmentName) => {
+    if (!departmentId) {
+      notify({
+        type: "error",
+        message: "Missing department ID. Please refresh and try again.",
+      });
       return;
+    }
+
+    openDeleteModal({
+      type: "department",
+      departmentId,
+      title: "Delete this department?",
+      description: `Department ${departmentName || `#${departmentId}`} will be permanently removed.`,
+      confirmLabel: "Delete department",
+      theme: "danger",
+      notice: "Deleting a department can impact related teachers and subjects.",
+    });
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+
+    setDeleteSubmitting(true);
     try {
-      await departmentApi.remove(departmentId);
-      notify({ type: "success", message: "Department deleted successfully" });
-      departmentsQuery.refetch();
+      if (deleteTarget.type === "user") {
+        await userApi.remove(deleteTarget.userId);
+        notify({ type: "success", message: "User deleted successfully" });
+        await usersQuery.refetch();
+      }
+
+      if (deleteTarget.type === "department") {
+        await departmentApi.remove(deleteTarget.departmentId);
+        notify({ type: "success", message: "Department deleted successfully" });
+        await departmentsQuery.refetch();
+      }
+
+      if (deleteTarget.type === "role") {
+        await userApi.removeRole(deleteTarget.userId, {
+          roleId: deleteTarget.roleId,
+        });
+        notify({ type: "success", message: "Role removed successfully" });
+        await usersQuery.refetch();
+      }
+
+      setConfirmModalOpen(false);
+      setDeleteTarget(null);
     } catch (error) {
       notify({
         type: "error",
-        message: error.response?.data?.error || "Failed to delete department",
+        message:
+          error.response?.data?.error ||
+          error.response?.data?.message ||
+          error.message ||
+          "Failed to complete delete action",
       });
+    } finally {
+      setDeleteSubmitting(false);
     }
   };
 
@@ -432,14 +562,18 @@ const AdminDashboard = () => {
                   >
                     Edit
                   </button>
+                  {String(row.user_id) === String(currentUserId) ? (
+                    <span className="text-xs text-slate-400">Own account</span>
+                  ) : (
+                    <button
+                      onClick={() => handleAssignRole(row)}
+                      className="text-xs text-blue-600 hover:underline"
+                    >
+                      Assign Role
+                    </button>
+                  )}
                   <button
-                    onClick={() => handleAssignRole(row)}
-                    className="text-xs text-blue-600 hover:underline"
-                  >
-                    Assign Role
-                  </button>
-                  <button
-                    onClick={() => handleDeleteUser(row.user_id)}
+                    onClick={() => handleDeleteUser(row.user_id, row.email)}
                     className="text-xs text-rose-600 hover:underline"
                   >
                     Delete
@@ -490,7 +624,9 @@ const AdminDashboard = () => {
                     Edit
                   </button>
                   <button
-                    onClick={() => handleDeleteDepartment(row.department_id)}
+                    onClick={() =>
+                      handleDeleteDepartment(row.department_id, row.name)
+                    }
                     className="text-xs text-rose-600 hover:underline"
                   >
                     Delete
@@ -560,6 +696,18 @@ const AdminDashboard = () => {
       </TableSection>
 
       {/* User Modal */}
+      <DeleteConfirmModal
+        open={confirmModalOpen}
+        title={deleteTarget?.title}
+        description={deleteTarget?.description}
+        confirmText={deleteTarget?.confirmLabel || "Delete"}
+        theme={deleteTarget?.theme || "danger"}
+        notice={deleteTarget?.notice}
+        loading={deleteSubmitting}
+        onCancel={closeDeleteModal}
+        onConfirm={handleConfirmDelete}
+      />
+
       <Modal
         open={userModalOpen}
         title={editingUser ? "Edit User" : "Create User"}

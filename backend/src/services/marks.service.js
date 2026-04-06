@@ -327,11 +327,20 @@ export const marksService = {
    * Submit or update a mark with triple authorization check
    * Implements Requirements 7.1, 7.2, 7.3, 7.4
    */
-  submitMark: async ({ teacherId, enrollmentId, subjectId, markObtained }) => {
+  submitMark: async ({
+    studentId,
+    teacherId,
+    enrollmentId,
+    subjectId,
+    markObtained,
+    allowOverwrite = false,
+  }) => {
+    const parsedStudentId = parseInt(studentId, 10);
+
     // 1. Validate enrollment exists and get class info
     const enrollmentResult = await pool.query(
       `
-      SELECT e.enrollment_id, e.class_id, c.results_published
+      SELECT e.enrollment_id, e.student_id, e.class_id, c.results_published
       FROM student_enrollments e
       JOIN classes c ON e.class_id = c.class_id
       WHERE e.enrollment_id = $1
@@ -344,6 +353,14 @@ export const marksService = {
     }
 
     const enrollment = enrollmentResult.rows[0];
+
+    if (enrollment.student_id !== parsedStudentId) {
+      throw new ApiError(
+        400,
+        "Selected student does not match selected enrollment",
+      );
+    }
+
     const classId = enrollment.class_id;
 
     // 2. Check if results are already published (Requirement 7.4)
@@ -386,8 +403,15 @@ export const marksService = {
 
     const totalMark = subjectResult.rows[0].total_mark;
 
-    if (markObtained < 0 || markObtained > totalMark) {
-      throw new ApiError(400, `Mark must be between 0 and ${totalMark}`);
+    const parsedMark = parseInt(markObtained, 10);
+    const effectiveMax = Math.min(100, parseInt(totalMark, 10));
+
+    if (
+      Number.isNaN(parsedMark) ||
+      parsedMark < 1 ||
+      parsedMark > effectiveMax
+    ) {
+      throw new ApiError(400, `Mark must be between 1 and ${effectiveMax}`);
     }
 
     // 5. Insert or update mark
@@ -402,14 +426,20 @@ export const marksService = {
 
       let markId;
       if (existingMark.rows.length > 0) {
-        // Update existing mark
+        if (!allowOverwrite) {
+          throw new ApiError(
+            409,
+            "Mark already submitted. Use update action before class results are published.",
+          );
+        }
+
         await client.query(
           "UPDATE marks SET mark_obtained = $1, teacher_id = $2, submitted_at = CURRENT_TIMESTAMP WHERE enrollment_id = $3 AND subject_id = $4",
           [
-            parseInt(markObtained),
-            parseInt(teacherId),
-            parseInt(enrollmentId),
-            parseInt(subjectId),
+            parsedMark,
+            parseInt(teacherId, 10),
+            parseInt(enrollmentId, 10),
+            parseInt(subjectId, 10),
           ],
         );
         markId = existingMark.rows[0].mark_id;
@@ -418,10 +448,10 @@ export const marksService = {
         const insertResult = await client.query(
           "INSERT INTO marks (enrollment_id, subject_id, teacher_id, mark_obtained) VALUES ($1, $2, $3, $4) RETURNING mark_id",
           [
-            parseInt(enrollmentId),
-            parseInt(subjectId),
-            parseInt(teacherId),
-            parseInt(markObtained),
+            parseInt(enrollmentId, 10),
+            parseInt(subjectId, 10),
+            parseInt(teacherId, 10),
+            parsedMark,
           ],
         );
         markId = insertResult.rows[0].mark_id;
@@ -446,7 +476,7 @@ export const marksService = {
     // Get mark with related data
     const markResult = await pool.query(
       `
-      SELECT m.mark_id, m.teacher_id, c.results_published
+      SELECT m.mark_id, m.teacher_id, m.subject_id, c.results_published
       FROM marks m
       JOIN student_enrollments e ON m.enrollment_id = e.enrollment_id
       JOIN classes c ON e.class_id = c.class_id
@@ -471,10 +501,32 @@ export const marksService = {
       throw new ApiError(403, "Teacher cannot modify another teacher's mark");
     }
 
+    const subjectResult = await pool.query(
+      "SELECT total_mark FROM subjects WHERE subject_id = $1",
+      [parseInt(mark.subject_id, 10)],
+    );
+
+    if (subjectResult.rows.length === 0) {
+      throw new ApiError(404, "Subject not found");
+    }
+
+    const parsedMark = parseInt(markObtained, 10);
+    const effectiveMax = Math.min(
+      100,
+      parseInt(subjectResult.rows[0].total_mark, 10),
+    );
+    if (
+      Number.isNaN(parsedMark) ||
+      parsedMark < 1 ||
+      parsedMark > effectiveMax
+    ) {
+      throw new ApiError(400, `Mark must be between 1 and ${effectiveMax}`);
+    }
+
     // Update mark
     await pool.query(
       "UPDATE marks SET mark_obtained = $1, submitted_at = CURRENT_TIMESTAMP WHERE mark_id = $2",
-      [parseInt(markObtained), parseInt(markId)],
+      [parsedMark, parseInt(markId, 10)],
     );
 
     return await marksService.getById(markId);
@@ -484,13 +536,47 @@ export const marksService = {
    * Create mark (admin/registrar only)
    */
   create: async (data) => {
+    const studentId = parseInt(data.studentId ?? data.student_id, 10);
+    const enrollmentId = parseInt(data.enrollmentId ?? data.enrollment_id, 10);
+    const subjectId = parseInt(data.subjectId ?? data.subject_id, 10);
+    const teacherIdRaw = data.teacherId ?? data.teacher_id;
+    const markObtained = parseInt(data.markObtained ?? data.mark_obtained, 10);
+
+    const enrollmentResult = await pool.query(
+      "SELECT enrollment_id, student_id FROM student_enrollments WHERE enrollment_id = $1",
+      [enrollmentId],
+    );
+
+    if (enrollmentResult.rows.length === 0) {
+      throw new ApiError(404, "Student enrollment not found");
+    }
+
+    if (enrollmentResult.rows[0].student_id !== studentId) {
+      throw new ApiError(
+        400,
+        "Selected student does not match selected enrollment",
+      );
+    }
+
+    const existingMarkResult = await pool.query(
+      "SELECT mark_id FROM marks WHERE enrollment_id = $1 AND subject_id = $2",
+      [enrollmentId, subjectId],
+    );
+
+    if (existingMarkResult.rows.length > 0) {
+      throw new ApiError(
+        409,
+        "Mark already exists for this student and subject. Update the existing mark instead.",
+      );
+    }
+
     const result = await pool.query(
       "INSERT INTO marks (enrollment_id, subject_id, teacher_id, mark_obtained) VALUES ($1, $2, $3, $4) RETURNING mark_id",
       [
-        parseInt(data.enrollmentId),
-        parseInt(data.subjectId),
-        data.teacherId ? parseInt(data.teacherId) : null,
-        parseInt(data.markObtained),
+        enrollmentId,
+        subjectId,
+        teacherIdRaw ? parseInt(teacherIdRaw, 10) : null,
+        markObtained,
       ],
     );
 
@@ -533,12 +619,12 @@ export const marksService = {
    */
   remove: async (markId) => {
     const result = await pool.query(
-      'DELETE FROM marks WHERE mark_id = $1 RETURNING mark_id',
-      [parseInt(markId)]
+      "DELETE FROM marks WHERE mark_id = $1 RETURNING mark_id",
+      [parseInt(markId)],
     );
 
     if (result.rows.length === 0) {
-      throw new ApiError(404, 'Mark not found');
+      throw new ApiError(404, "Mark not found");
     }
 
     return { success: true };

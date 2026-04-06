@@ -1,18 +1,17 @@
-import { useMemo, useState, useCallback, useEffect, useRef } from "react";
-import { Link } from "react-router-dom";
+import { useMemo, useState, useCallback, useEffect } from "react";
 import marksApi from "../../api/marksApi";
 import reportApi from "../../api/reportApi";
 import teacherApi from "../../api/teacherApi";
-import classApi from "../../api/classApi";
+import studentApi from "../../api/studentApi";
 import Table from "../common/Table";
 import TableSection from "../common/TableSection";
 import StateView from "../common/StateView";
-import Modal from "../common/Modal";
 import Input from "../common/Input";
 import Select from "../common/Select";
 import Button from "../common/Button";
 import { useAuth } from "../../hooks/useAuth";
 import { useFetch } from "../../hooks/useFetch";
+import { extractErrorMessage, extractPayload } from "../../api/responseAdapter";
 import { formatDate } from "../../utils/formatDate";
 import { notify } from "../../utils/notifications";
 
@@ -21,102 +20,309 @@ const toNumber = (value) => {
   return Number.isFinite(numeric) ? numeric : 0;
 };
 
+const resolveTeacherId = (teacher) =>
+  teacher?.teacherId ?? teacher?.teacher_id ?? null;
+
 const TeacherDashboard = () => {
   const { user } = useAuth();
-  const [selectedAssignment, setSelectedAssignment] = useState(null);
-  const [showMarkEntry, setShowMarkEntry] = useState(false);
+  const teacherId = resolveTeacherId(user?.teacher);
+
   const [markFormData, setMarkFormData] = useState({
-    enrollmentId: "",
-    markObtained: "",
+    academicYear: "",
+    termKey: "",
+    classId: "",
+    subjectId: "",
   });
-  const [submittingMark, setSubmittingMark] = useState(false);
-  const [selectedClass, setSelectedClass] = useState(null);
+
+  const [classReport, setClassReport] = useState(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState("");
+  const [showStudentCards, setShowStudentCards] = useState(false);
+  const [savingEnrollmentId, setSavingEnrollmentId] = useState(null);
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const [draftMarks, setDraftMarks] = useState({});
   const [classRoster, setClassRoster] = useState([]);
   const [loadingRoster, setLoadingRoster] = useState(false);
-  const [autoSaveStatus, setAutoSaveStatus] = useState(''); // 'saving', 'saved', 'error'
-  const autoSaveTimeoutRef = useRef(null);
-  const [showHomeroomSection, setShowHomeroomSection] = useState(false);
 
-  const teachersQuery = useFetch(() => teacherApi.getAll(), []);
-  const reportsQuery = useFetch(() => reportApi.getAcademicReport(), []);
-
-  const currentTeacher = useMemo(
-    () =>
-      (teachersQuery.data || []).find(
-        (teacher) => Number(teacher.user_id) === Number(user?.user_id),
-      ),
-    [teachersQuery.data, user?.user_id],
-  );
-
-  // Fetch homeroom class when teacher is identified
   const homeroomClassQuery = useFetch(
-    () => currentTeacher ? teacherApi.getHomeroomClass(currentTeacher.teacher_id) : Promise.resolve(null),
-    [currentTeacher?.teacher_id]
+    () =>
+      teacherId
+        ? teacherApi.getHomeroomClass(teacherId)
+        : Promise.resolve(null),
+    [teacherId],
+    true,
+    { mode: "payload", initialData: null },
   );
 
-  const homeroomClass = homeroomClassQuery.data;
-  const isHomeroomTeacher = !!homeroomClass;
-
-  // Fetch class report for homeroom class
-  const homeroomReportQuery = useFetch(
-    () => homeroomClass ? reportApi.getClassReport(homeroomClass.classId) : Promise.resolve(null),
-    [homeroomClass?.classId]
-  );
-
-  // Fetch mark completion status for homeroom class
-  const markCompletionQuery = useFetch(
-    () => homeroomClass ? reportApi.getMarkCompletionStatus(homeroomClass.classId) : Promise.resolve(null),
-    [homeroomClass?.classId]
-  );
+  const homeroomClass =
+    homeroomClassQuery.data && typeof homeroomClassQuery.data === "object"
+      ? homeroomClassQuery.data
+      : null;
+  const homeroomClassId = homeroomClass?.classId ?? homeroomClass?.class_id;
+  const homeroomClassLabel = homeroomClass
+    ? `${homeroomClass.grade || "Class"} - ${homeroomClass.className || "Section"}`
+    : "Not assigned";
 
   // Fetch teacher assignments when teacher is identified
   const assignmentsQuery = useFetch(
-    () => currentTeacher ? teacherApi.getAssignments(currentTeacher.teacher_id) : Promise.resolve([]),
-    [currentTeacher?.teacher_id]
+    () =>
+      teacherId ? teacherApi.getAssignments(teacherId) : Promise.resolve([]),
+    [teacherId],
   );
 
   // Fetch marks for this teacher
   const teacherMarksQuery = useFetch(
-    () => currentTeacher ? marksApi.getByTeacher(currentTeacher.teacher_id) : Promise.resolve([]),
-    [currentTeacher?.teacher_id]
+    () => (teacherId ? marksApi.getByTeacher(teacherId) : Promise.resolve([])),
+    [teacherId],
+  );
+
+  const academicReportQuery = useFetch(
+    () => (teacherId ? reportApi.getAcademicReport() : Promise.resolve([])),
+    [teacherId],
   );
 
   const scopedMarks = teacherMarksQuery.data || [];
 
+  const assignmentRows = useMemo(
+    () =>
+      (assignmentsQuery.data || []).map((assignment) => {
+        const classData = assignment.classSubject?.class || {};
+        const subjectData = assignment.classSubject?.subject || {};
+        const termData = classData.term || {};
+
+        const academicYear =
+          termData.academicYear || termData.academic_year || "Unknown";
+        const semester = termData.semester || "Unknown";
+
+        return {
+          teacherClassSubjectId: assignment.teacherClassSubjectId,
+          classId: classData.classId,
+          className: classData.className,
+          grade: classData.grade,
+          resultsPublished: Boolean(classData.resultsPublished),
+          isHomeroomClass:
+            homeroomClassId !== undefined && homeroomClassId !== null
+              ? Number(classData.classId) === Number(homeroomClassId)
+              : false,
+          subjectId: subjectData.subjectId,
+          subjectName: subjectData.name,
+          subjectCode: subjectData.code,
+          academicYear,
+          semester,
+          termKey: `${academicYear}::${semester}`,
+        };
+      }),
+    [assignmentsQuery.data, homeroomClassId],
+  );
+
+  const marksOverviewRows = useMemo(() => {
+    const dedupe = new Map();
+
+    (academicReportQuery.data || []).forEach((row) => {
+      const studentId = row.studentId ?? row.student_id;
+      const classId = row.classId ?? row.class_id;
+      const academicYear = row.academicYear ?? row.academic_year;
+      const semester = row.semester;
+
+      const key = `${studentId}-${classId}-${academicYear}-${semester}`;
+      if (dedupe.has(key)) return;
+
+      dedupe.set(key, {
+        studentSchoolId: row.studentSchoolId ?? row.student_school_id ?? "-",
+        studentName: row.fullName ?? row.full_name ?? "-",
+        classSection: row.className ?? row.class_name ?? "-",
+        classLevel: row.grade ?? "-",
+        academicYear: academicYear ?? "-",
+        term: semester ?? "-",
+        total: row.totalMarks ?? row.total_marks ?? 0,
+        average: row.averageScore ?? row.average_score ?? 0,
+        rank: row.rank ?? "-",
+        status: row.status ?? "INCOMPLETE",
+      });
+    });
+
+    return Array.from(dedupe.values()).sort((a, b) => {
+      if (String(a.academicYear) !== String(b.academicYear)) {
+        return String(b.academicYear).localeCompare(String(a.academicYear));
+      }
+      return String(a.studentName).localeCompare(String(b.studentName));
+    });
+  }, [academicReportQuery.data]);
+
+  const academicYearOptions = useMemo(
+    () =>
+      Array.from(new Set(assignmentRows.map((row) => row.academicYear)))
+        .filter(Boolean)
+        .sort((a, b) => String(b).localeCompare(String(a)))
+        .map((academicYear) => ({ value: academicYear, label: academicYear })),
+    [assignmentRows],
+  );
+
+  const termOptions = useMemo(() => {
+    if (!markFormData.academicYear) return [];
+
+    return Array.from(
+      new Set(
+        assignmentRows
+          .filter((row) => row.academicYear === markFormData.academicYear)
+          .map((row) => row.termKey),
+      ),
+    )
+      .map((termKey) => {
+        const [, semester] = termKey.split("::");
+        return { value: termKey, label: `Term ${semester}` };
+      })
+      .sort((a, b) => String(a.value).localeCompare(String(b.value)));
+  }, [assignmentRows, markFormData.academicYear]);
+
+  const classChoices = useMemo(() => {
+    if (!markFormData.academicYear || !markFormData.termKey) return [];
+
+    const dedupe = new Map();
+    assignmentRows
+      .filter(
+        (row) =>
+          row.academicYear === markFormData.academicYear &&
+          row.termKey === markFormData.termKey,
+      )
+      .forEach((row) => {
+        if (!dedupe.has(String(row.classId))) {
+          dedupe.set(String(row.classId), {
+            value: String(row.classId),
+            label: `${row.grade || "Class"} - ${row.className || "Section"}`,
+            resultsPublished: row.resultsPublished,
+            className: row.className,
+            grade: row.grade,
+          });
+        }
+      });
+
+    return Array.from(dedupe.values());
+  }, [assignmentRows, markFormData.academicYear, markFormData.termKey]);
+
+  const subjectChoices = useMemo(() => {
+    if (
+      !markFormData.academicYear ||
+      !markFormData.termKey ||
+      !markFormData.classId
+    ) {
+      return [];
+    }
+
+    return assignmentRows
+      .filter(
+        (row) =>
+          row.academicYear === markFormData.academicYear &&
+          row.termKey === markFormData.termKey &&
+          String(row.classId) === String(markFormData.classId),
+      )
+      .map((row) => ({
+        value: String(row.subjectId),
+        label: `${row.subjectName} (${row.subjectCode || "-"})`,
+      }));
+  }, [
+    assignmentRows,
+    markFormData.academicYear,
+    markFormData.termKey,
+    markFormData.classId,
+  ]);
+
+  const selectedClassMeta = useMemo(
+    () =>
+      classChoices.find(
+        (classOption) =>
+          String(classOption.value) === String(markFormData.classId),
+      ) || null,
+    [classChoices, markFormData.classId],
+  );
+
+  const selectedSubjectMeta = useMemo(
+    () =>
+      subjectChoices.find(
+        (subjectOption) =>
+          String(subjectOption.value) === String(markFormData.subjectId),
+      ) || null,
+    [subjectChoices, markFormData.subjectId],
+  );
+
+  const selectedSubjectId = Number(markFormData.subjectId || 0);
+
+  const marksByEnrollmentForSelectedSubject = useMemo(() => {
+    if (!selectedSubjectId) return new Map();
+
+    const next = new Map();
+    (scopedMarks || []).forEach((mark) => {
+      const markSubjectId = Number(mark.subjectId || mark.subject_id);
+      if (markSubjectId !== selectedSubjectId) return;
+
+      const enrollmentId = Number(mark.enrollmentId || mark.enrollment_id);
+      if (!enrollmentId) return;
+      next.set(enrollmentId, mark);
+    });
+
+    return next;
+  }, [scopedMarks, selectedSubjectId]);
+
+  const gradebookRows = useMemo(
+    () =>
+      (classRoster || []).map((enrollment) => {
+        const enrollmentId = Number(
+          enrollment.enrollmentId || enrollment.enrollment_id,
+        );
+        const studentId =
+          enrollment.student?.studentId ||
+          enrollment.student?.student_id ||
+          enrollment.studentId ||
+          enrollment.student_id;
+
+        const currentMark =
+          marksByEnrollmentForSelectedSubject.get(enrollmentId);
+        const currentMarkValue =
+          currentMark?.markObtained ?? currentMark?.mark_obtained ?? null;
+
+        return {
+          enrollmentId,
+          studentId,
+          studentSchoolId:
+            enrollment.student?.studentSchoolId ||
+            enrollment.student?.student_school_id ||
+            "-",
+          studentName:
+            enrollment.student?.fullName ||
+            enrollment.student?.full_name ||
+            "-",
+          existingMarkId: currentMark?.markId || currentMark?.mark_id || null,
+          existingMarkValue: currentMarkValue,
+          status: currentMark ? "Entered" : "Pending",
+        };
+      }),
+    [classRoster, marksByEnrollmentForSelectedSubject],
+  );
+
   // Calculate assignment statistics
   const assignmentStats = useMemo(() => {
-    const assignments = assignmentsQuery.data || [];
     const marks = scopedMarks;
-    
-    const stats = assignments.map(assignment => {
-      const classId = assignment.classSubject?.class?.classId;
-      const subjectId = assignment.classSubject?.subject?.subjectId;
-      
-      // Count marks submitted for this class-subject combination
+
+    return assignmentRows.map((assignment) => {
       const submittedMarks = marks.filter(
-        mark => 
-          mark.enrollment?.classId === classId && 
-          mark.subjectId === subjectId
+        (mark) =>
+          Number(mark.enrollment?.classId) === Number(assignment.classId) &&
+          Number(mark.subjectId || mark.subject_id) ===
+            Number(assignment.subjectId),
       );
-      
+
       return {
         ...assignment,
-        className: assignment.classSubject?.class?.className || 'Unknown',
-        subjectName: assignment.classSubject?.subject?.name || 'Unknown',
-        classId,
-        subjectId,
         marksSubmitted: submittedMarks.length,
-        resultsPublished: assignment.classSubject?.class?.resultsPublished || false
       };
     });
-    
-    return stats;
-  }, [assignmentsQuery.data, scopedMarks]);
+  }, [assignmentRows, scopedMarks]);
 
   const marksAverage = scopedMarks.length
     ? (
         scopedMarks.reduce(
-          (sum, mark) => sum + toNumber(mark.mark_obtained || mark.markObtained),
+          (sum, mark) =>
+            sum + toNumber(mark.mark_obtained || mark.markObtained),
           0,
         ) / scopedMarks.length
       ).toFixed(1)
@@ -133,241 +339,430 @@ const TeacherDashboard = () => {
         .slice(0, 12)
         .map((mark) => ({
           ...mark,
-          student_name: mark.enrollment?.student?.fullName || mark.enrollment?.student?.full_name || 'Unknown',
-          subject_name: mark.subject?.name || 'Unknown',
-          class_name: mark.enrollment?.class?.className || mark.enrollment?.class?.class_name || 'Unknown',
+          student_name:
+            mark.enrollment?.student?.fullName ||
+            mark.enrollment?.student?.full_name ||
+            "Unknown",
+          subject_name: mark.subject?.name || "Unknown",
+          class_name:
+            mark.enrollment?.class?.className ||
+            mark.enrollment?.class?.class_name ||
+            "Unknown",
           submitted_on: formatDate(mark.submitted_at || mark.submittedAt),
         })),
     [scopedMarks],
   );
 
-  const supportRows = useMemo(
-    () =>
-      (reportsQuery.data || [])
-        .filter((row) => row.status !== "PASS")
-        .sort((a, b) => toNumber(a.average_score) - toNumber(b.average_score))
-        .slice(0, 12),
-    [reportsQuery.data],
-  );
-
-  // Load class roster for mark entry
   const loadClassRoster = useCallback(async (classId) => {
     setLoadingRoster(true);
     try {
-      const enrollments = await classApi.getEnrollments(classId);
-      setClassRoster(enrollments);
+      const response = await studentApi.getEnrollments({
+        classId,
+        page: 1,
+        limit: 500,
+      });
+      const payload = extractPayload(response) || {};
+      setClassRoster(
+        Array.isArray(payload.enrollments) ? payload.enrollments : [],
+      );
     } catch (error) {
-      notify({ type: 'error', message: error.message || 'Failed to load class roster' });
+      notify({
+        type: "error",
+        message: extractErrorMessage(error, "Failed to load class roster"),
+      });
       setClassRoster([]);
     } finally {
       setLoadingRoster(false);
     }
   }, []);
 
-  // Handle opening mark entry modal
-  const handleOpenMarkEntry = useCallback((assignment) => {
-    setSelectedAssignment(assignment);
-    setSelectedClass(assignment.classId);
-    setMarkFormData({ enrollmentId: "", markObtained: "" });
-    setShowMarkEntry(true);
-    loadClassRoster(assignment.classId);
-  }, [loadClassRoster]);
-
-  // Handle mark submission
-  const handleSubmitMark = useCallback(async (e) => {
-    e.preventDefault();
-    
-    if (!markFormData.enrollmentId || !markFormData.markObtained) {
-      notify({ type: 'error', message: 'Please select a student and enter a mark' });
-      return;
-    }
-
-    if (!currentTeacher || !selectedAssignment) {
-      notify({ type: 'error', message: 'Teacher or assignment information missing' });
-      return;
-    }
-
-    const markValue = parseInt(markFormData.markObtained);
-    if (isNaN(markValue) || markValue < 0 || markValue > 100) {
-      notify({ type: 'error', message: 'Mark must be between 0 and 100' });
-      return;
-    }
-
-    setSubmittingMark(true);
-    setAutoSaveStatus('');
-    try {
-      await marksApi.submitMark({
-        teacherId: currentTeacher.teacher_id || currentTeacher.teacherId,
-        enrollmentId: parseInt(markFormData.enrollmentId),
-        subjectId: selectedAssignment.subjectId,
-        markObtained: markValue,
-      });
-      
-      notify({ type: 'success', message: 'Mark submitted successfully' });
-      setMarkFormData({ enrollmentId: "", markObtained: "" });
-      
-      // Refresh data
-      await teacherMarksQuery.refetch();
-      await assignmentsQuery.refetch();
-    } catch (error) {
-      notify({ type: 'error', message: error.message || 'Failed to submit mark' });
-    } finally {
-      setSubmittingMark(false);
-    }
-  }, [markFormData, currentTeacher, selectedAssignment, teacherMarksQuery, assignmentsQuery]);
-
-  // Auto-save functionality for mark entry
-  const handleMarkChange = useCallback((field, value) => {
-    setMarkFormData(prev => ({ ...prev, [field]: value }));
-    
-    // Clear any existing timeout
-    if (autoSaveTimeoutRef.current) {
-      clearTimeout(autoSaveTimeoutRef.current);
-    }
-    
-    // Only auto-save if both fields are filled
-    if (field === 'markObtained' && markFormData.enrollmentId && value) {
-      const markValue = parseInt(value);
-      
-      // Validate mark range
-      if (isNaN(markValue) || markValue < 0 || markValue > 100) {
-        setAutoSaveStatus('error');
-        return;
-      }
-      
-      // Set up auto-save after 2 seconds of inactivity
-      setAutoSaveStatus('');
-      autoSaveTimeoutRef.current = setTimeout(async () => {
-        if (!currentTeacher || !selectedAssignment) return;
-        
-        setAutoSaveStatus('saving');
-        try {
-          await marksApi.submitMark({
-            teacherId: currentTeacher.teacher_id || currentTeacher.teacherId,
-            enrollmentId: parseInt(markFormData.enrollmentId),
-            subjectId: selectedAssignment.subjectId,
-            markObtained: markValue,
-          });
-          
-          setAutoSaveStatus('saved');
-          
-          // Refresh data in background
-          teacherMarksQuery.refetch();
-          assignmentsQuery.refetch();
-          
-          // Clear saved status after 3 seconds
-          setTimeout(() => setAutoSaveStatus(''), 3000);
-        } catch (error) {
-          setAutoSaveStatus('error');
-          notify({ type: 'error', message: error.message || 'Auto-save failed' });
-        }
-      }, 2000);
-    } else if (field === 'enrollmentId' && markFormData.markObtained && value) {
-      const markValue = parseInt(markFormData.markObtained);
-      
-      // Validate mark range
-      if (isNaN(markValue) || markValue < 0 || markValue > 100) {
-        setAutoSaveStatus('error');
-        return;
-      }
-      
-      // Set up auto-save after 2 seconds of inactivity
-      setAutoSaveStatus('');
-      autoSaveTimeoutRef.current = setTimeout(async () => {
-        if (!currentTeacher || !selectedAssignment) return;
-        
-        setAutoSaveStatus('saving');
-        try {
-          await marksApi.submitMark({
-            teacherId: currentTeacher.teacher_id || currentTeacher.teacherId,
-            enrollmentId: parseInt(value),
-            subjectId: selectedAssignment.subjectId,
-            markObtained: markValue,
-          });
-          
-          setAutoSaveStatus('saved');
-          
-          // Refresh data in background
-          teacherMarksQuery.refetch();
-          assignmentsQuery.refetch();
-          
-          // Clear saved status after 3 seconds
-          setTimeout(() => setAutoSaveStatus(''), 3000);
-        } catch (error) {
-          setAutoSaveStatus('error');
-          notify({ type: 'error', message: error.message || 'Auto-save failed' });
-        }
-      }, 2000);
-    }
-  }, [markFormData, currentTeacher, selectedAssignment, teacherMarksQuery, assignmentsQuery]);
-
-  // Clean up timeout on unmount
   useEffect(() => {
-    return () => {
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-      }
-    };
-  }, []);
+    if (!markFormData.academicYear && academicYearOptions.length > 0) {
+      setMarkFormData((prev) => ({
+        ...prev,
+        academicYear: academicYearOptions[0].value,
+      }));
+    }
+  }, [academicYearOptions, markFormData.academicYear]);
 
-  // Handle viewing class roster
-  const handleViewRoster = useCallback(async (assignment) => {
-    setSelectedAssignment(assignment);
-    setSelectedClass(assignment.classId);
-    await loadClassRoster(assignment.classId);
-  }, [loadClassRoster]);
+  useEffect(() => {
+    if (
+      markFormData.termKey &&
+      termOptions.some((term) => term.value === markFormData.termKey)
+    ) {
+      return;
+    }
+
+    const nextTerm = termOptions[0]?.value || "";
+    if (markFormData.termKey !== nextTerm) {
+      setMarkFormData((prev) => ({
+        ...prev,
+        termKey: nextTerm,
+        classId: "",
+        subjectId: "",
+      }));
+    }
+  }, [termOptions, markFormData.termKey]);
+
+  useEffect(() => {
+    if (
+      markFormData.classId &&
+      classChoices.some(
+        (classChoice) => classChoice.value === String(markFormData.classId),
+      )
+    ) {
+      return;
+    }
+
+    const nextClass = classChoices[0]?.value || "";
+    if (markFormData.classId !== nextClass) {
+      setMarkFormData((prev) => ({
+        ...prev,
+        classId: nextClass,
+        subjectId: "",
+      }));
+    }
+  }, [classChoices, markFormData.classId]);
+
+  useEffect(() => {
+    if (
+      markFormData.subjectId &&
+      subjectChoices.some(
+        (subjectChoice) =>
+          subjectChoice.value === String(markFormData.subjectId),
+      )
+    ) {
+      return;
+    }
+
+    const nextSubject = subjectChoices[0]?.value || "";
+    if (markFormData.subjectId !== nextSubject) {
+      setMarkFormData((prev) => ({
+        ...prev,
+        subjectId: nextSubject,
+      }));
+    }
+  }, [subjectChoices, markFormData.subjectId]);
+
+  useEffect(() => {
+    if (!markFormData.classId) {
+      setClassRoster([]);
+      return;
+    }
+    loadClassRoster(markFormData.classId);
+  }, [markFormData.classId, loadClassRoster]);
+
+  useEffect(() => {
+    if (!selectedSubjectId || !classRoster.length) {
+      setDraftMarks({});
+      return;
+    }
+
+    const nextDrafts = {};
+    classRoster.forEach((enrollment) => {
+      const enrollmentId = Number(
+        enrollment.enrollmentId || enrollment.enrollment_id,
+      );
+      const currentMark = marksByEnrollmentForSelectedSubject.get(enrollmentId);
+      nextDrafts[enrollmentId] =
+        currentMark &&
+        (currentMark.markObtained !== undefined ||
+          currentMark.mark_obtained !== undefined)
+          ? String(currentMark.markObtained ?? currentMark.mark_obtained)
+          : "";
+    });
+
+    setDraftMarks(nextDrafts);
+  }, [classRoster, selectedSubjectId, marksByEnrollmentForSelectedSubject]);
+
+  const handleHierarchyChange = (field, value) => {
+    setMarkFormData((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const generateClassReport = useCallback(
+    async (classIdOverride = null) => {
+      const classId = classIdOverride || markFormData.classId;
+      if (!classId) {
+        notify({
+          type: "warning",
+          message: "Select class hierarchy first to generate report.",
+        });
+        return;
+      }
+
+      setReportLoading(true);
+      setReportError("");
+      setShowStudentCards(false);
+      try {
+        const response = await reportApi.getClassReport(classId);
+        const payload = extractPayload(response);
+        setClassReport(payload || null);
+      } catch (error) {
+        const message = extractErrorMessage(
+          error,
+          "Failed to generate class report",
+        );
+        setReportError(message);
+        notify({ type: "error", message });
+      } finally {
+        setReportLoading(false);
+      }
+    },
+    [markFormData.classId],
+  );
+
+  const generateHomeroomRoster = useCallback(async () => {
+    if (!homeroomClassId) {
+      notify({
+        type: "warning",
+        message: "No homeroom class is assigned to your teacher account.",
+      });
+      return;
+    }
+
+    await generateClassReport(homeroomClassId);
+  }, [generateClassReport, homeroomClassId]);
+
+  const applyAssignmentToHierarchy = (assignment) => {
+    setMarkFormData((prev) => ({
+      ...prev,
+      academicYear: assignment.academicYear,
+      termKey: assignment.termKey,
+      classId: String(assignment.classId),
+      subjectId: String(assignment.subjectId),
+    }));
+  };
+
+  const saveEnrollmentMark = useCallback(
+    async (row, options = {}) => {
+      const { silent = false } = options;
+
+      if (!teacherId) {
+        throw new Error("Teacher profile missing from login session");
+      }
+
+      if (!selectedSubjectId) {
+        throw new Error("Select a subject before entering marks");
+      }
+
+      if (selectedClassMeta?.resultsPublished) {
+        throw new Error(
+          "Results already published for this class. Marks are locked.",
+        );
+      }
+
+      const rawValue = String(draftMarks[row.enrollmentId] ?? "").trim();
+      if (!rawValue) {
+        throw new Error(`Mark is required for ${row.studentName}`);
+      }
+
+      const parsedMark = Number(rawValue);
+      if (!Number.isInteger(parsedMark) || parsedMark < 1 || parsedMark > 100) {
+        throw new Error(
+          `Mark for ${row.studentName} must be an integer between 1 and 100`,
+        );
+      }
+
+      if (!row.studentId) {
+        throw new Error(`Student record is invalid for ${row.studentName}`);
+      }
+
+      if (!silent) {
+        setSavingEnrollmentId(row.enrollmentId);
+      }
+
+      if (row.existingMarkId) {
+        await marksApi.updateMarkByTeacher(row.existingMarkId, {
+          markObtained: parsedMark,
+        });
+      } else {
+        await marksApi.submitMark({
+          studentId: Number(row.studentId),
+          enrollmentId: Number(row.enrollmentId),
+          subjectId: Number(selectedSubjectId),
+          markObtained: parsedMark,
+        });
+      }
+
+      if (!silent) {
+        notify({
+          type: "success",
+          message: `Mark saved for ${row.studentName}`,
+        });
+      }
+    },
+    [
+      teacherId,
+      selectedSubjectId,
+      selectedClassMeta?.resultsPublished,
+      draftMarks,
+    ],
+  );
+
+  const handleSaveSingleMark = async (row) => {
+    try {
+      await saveEnrollmentMark(row);
+      await Promise.allSettled([
+        teacherMarksQuery.refetch(),
+        assignmentsQuery.refetch(),
+      ]);
+    } catch (error) {
+      notify({
+        type: "error",
+        message: extractErrorMessage(error, "Failed to save mark"),
+      });
+    } finally {
+      setSavingEnrollmentId(null);
+    }
+  };
+
+  const handleSaveAllMarks = async () => {
+    if (!gradebookRows.length) {
+      notify({
+        type: "warning",
+        message: "No students found for selected class.",
+      });
+      return;
+    }
+
+    setBulkSaving(true);
+    try {
+      const rowsWithValues = gradebookRows.filter((row) => {
+        const value = String(draftMarks[row.enrollmentId] ?? "").trim();
+        return value.length > 0;
+      });
+
+      if (!rowsWithValues.length) {
+        throw new Error("Enter at least one mark before using Save All");
+      }
+
+      for (const row of rowsWithValues) {
+        await saveEnrollmentMark(row, { silent: true });
+      }
+
+      await Promise.allSettled([
+        teacherMarksQuery.refetch(),
+        assignmentsQuery.refetch(),
+      ]);
+
+      notify({
+        type: "success",
+        message: `Saved ${rowsWithValues.length} marks successfully.`,
+      });
+    } catch (error) {
+      notify({
+        type: "error",
+        message: extractErrorMessage(error, "Failed to save all marks"),
+      });
+    } finally {
+      setBulkSaving(false);
+      setSavingEnrollmentId(null);
+    }
+  };
 
   const errors = [
-    teachersQuery.error,
     assignmentsQuery.error,
     teacherMarksQuery.error,
-    reportsQuery.error,
+    academicReportQuery.error,
     homeroomClassQuery.error,
-    homeroomReportQuery.error,
-    markCompletionQuery.error,
   ].filter(Boolean);
 
   const loading =
-    teachersQuery.loading || assignmentsQuery.loading || teacherMarksQuery.loading || reportsQuery.loading;
+    assignmentsQuery.loading ||
+    teacherMarksQuery.loading ||
+    academicReportQuery.loading ||
+    homeroomClassQuery.loading;
 
   const refreshAll = async () => {
     await Promise.allSettled([
-      teachersQuery.refetch(),
       assignmentsQuery.refetch(),
       teacherMarksQuery.refetch(),
-      reportsQuery.refetch(),
+      academicReportQuery.refetch(),
       homeroomClassQuery.refetch(),
-      homeroomReportQuery.refetch(),
-      markCompletionQuery.refetch(),
     ]);
   };
 
-  // Calculate homeroom class statistics
-  const homeroomStats = useMemo(() => {
-    if (!homeroomReportQuery.data) return null;
-    
-    const report = homeroomReportQuery.data;
-    const students = report.students || [];
-    
-    const passCount = students.filter(s => s.status === 'PASS').length;
-    const failCount = students.filter(s => s.status === 'FAIL').length;
-    const incompleteCount = students.filter(s => s.status === 'INCOMPLETE').length;
-    
-    const completeStudents = students.filter(s => s.isComplete);
-    const averageScore = completeStudents.length > 0
-      ? (completeStudents.reduce((sum, s) => sum + (s.average || 0), 0) / completeStudents.length).toFixed(1)
-      : '0.0';
-    
-    return {
-      totalStudents: students.length,
-      passCount,
-      failCount,
-      incompleteCount,
-      averageScore,
-      allMarksComplete: report.allMarksComplete,
-      resultsPublished: report.resultsPublished
-    };
-  }, [homeroomReportQuery.data]);
+  const reportRows = useMemo(
+    () =>
+      (classReport?.students || []).map((studentRow) => ({
+        studentId: studentRow.student?.studentId || "-",
+        rank: studentRow.rank ?? "-",
+        studentName: studentRow.student?.fullName || "-",
+        studentSchoolId: studentRow.student?.studentSchoolId || "-",
+        gender: studentRow.student?.gender || "-",
+        total: (studentRow.marks || []).reduce(
+          (sum, markRow) => sum + Number(markRow.markObtained || 0),
+          0,
+        ),
+        average:
+          studentRow.average === null || studentRow.average === undefined
+            ? "-"
+            : Number(studentRow.average).toFixed(1),
+        status: studentRow.status || "INCOMPLETE",
+      })),
+    [classReport],
+  );
+
+  const canShowHomeroomData =
+    classReport &&
+    homeroomClassId !== undefined &&
+    homeroomClassId !== null &&
+    Number(classReport.classId) === Number(homeroomClassId);
+
+  const sectionAverageRange = useMemo(() => {
+    if (!canShowHomeroomData) return "-";
+
+    const averages = (classReport?.students || [])
+      .map((studentRow) => studentRow.average)
+      .filter((average) => average !== null && average !== undefined)
+      .map(Number)
+      .filter((average) => Number.isFinite(average));
+
+    if (!averages.length) return "-";
+
+    return `${Math.min(...averages).toFixed(1)} - ${Math.max(...averages).toFixed(1)}`;
+  }, [canShowHomeroomData, classReport]);
+
+  const studentCards = useMemo(() => {
+    if (!canShowHomeroomData) return [];
+
+    return (classReport?.students || []).map((studentRow) => {
+      const totalMarks = (studentRow.marks || []).reduce(
+        (sum, markRow) => sum + Number(markRow.markObtained || 0),
+        0,
+      );
+
+      return {
+        studentId: studentRow.student?.studentId || "-",
+        studentSchoolId: studentRow.student?.studentSchoolId || "-",
+        studentName: studentRow.student?.fullName || "-",
+        gender: studentRow.student?.gender || "-",
+        rank: studentRow.rank ?? "-",
+        status: studentRow.status ?? "INCOMPLETE",
+        average:
+          studentRow.average === null || studentRow.average === undefined
+            ? "-"
+            : Number(studentRow.average).toFixed(1),
+        total: totalMarks,
+        academicYear: classReport?.term?.academicYear || "-",
+        term: classReport?.term?.semester || "-",
+        classLevel: classReport?.grade || "-",
+        section: classReport?.className || "-",
+        sectionRange: sectionAverageRange,
+        marks: (studentRow.marks || []).map(
+          (markRow) => `${markRow.subjectName}: ${markRow.markObtained}`,
+        ),
+      };
+    });
+  }, [canShowHomeroomData, classReport, sectionAverageRange]);
+
+  const classCount = useMemo(
+    () => new Set(assignmentRows.map((row) => String(row.classId))).size,
+    [assignmentRows],
+  );
+
+  const teacherDisplayName =
+    user?.teacher?.fullName || user?.teacher?.full_name || "Teacher";
 
   return (
     <div className="space-y-4">
@@ -388,30 +783,37 @@ const TeacherDashboard = () => {
         />
       ) : null}
 
-      {!loading && !currentTeacher ? (
+      {!loading && !teacherId ? (
         <StateView
           type="empty"
           title="Teacher profile not linked"
-          description="Your user account is not yet mapped to a teacher record. You can still review reports and mark activity."
+          description="Your login context has no teacher profile. Ask admin to map your user account to a teacher record."
         />
       ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <div className="metric-item">
           <p className="metric-label">Teacher Profile</p>
-          <p className="metric-value">
-            {currentTeacher?.full_name || currentTeacher?.fullName || "Unlinked"}
-          </p>
+          <p className="metric-value">{teacherDisplayName}</p>
           <p className="mt-1 text-xs text-slate-600">
-            {currentTeacher
-              ? `ID ${currentTeacher.teacher_id || currentTeacher.teacherId}`
-              : "Needs mapping"}
+            {teacherId ? `ID ${teacherId}` : "Needs mapping"}
           </p>
         </div>
         <div className="metric-item">
-          <p className="metric-label">Class Assignments</p>
-          <p className="metric-value">{assignmentStats.length}</p>
-          <p className="mt-1 text-xs text-slate-600">Classes you teach</p>
+          <p className="metric-label">Assigned Classes</p>
+          <p className="metric-value">{classCount}</p>
+          <p className="mt-1 text-xs text-slate-600">
+            Across sections and terms
+          </p>
+        </div>
+        <div className="metric-item">
+          <p className="metric-label">Homeroom Class</p>
+          <p className="metric-value text-base">{homeroomClassLabel}</p>
+          <p className="mt-1 text-xs text-slate-600">
+            {homeroomClassId
+              ? `Class ID ${homeroomClassId}`
+              : "Roster/cards locked"}
+          </p>
         </div>
         <div className="metric-item">
           <p className="metric-label">Submitted Marks</p>
@@ -425,231 +827,296 @@ const TeacherDashboard = () => {
         </div>
       </div>
 
-      {/* Homeroom Teacher Section */}
-      {isHomeroomTeacher && homeroomClass && (
-        <div className="space-y-4 border-t-2 border-emerald-200 pt-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-xl font-bold text-slate-800">
-                Homeroom Class: {homeroomClass.className}
-              </h2>
-              <p className="text-sm text-slate-600">
-                Grade {homeroomClass.grade} • {homeroomClass.term?.academicYear} - Semester {homeroomClass.term?.semester}
-              </p>
-            </div>
-            <button
-              onClick={() => setShowHomeroomSection(!showHomeroomSection)}
-              className="text-sm text-emerald-600 hover:text-emerald-800 font-medium"
-            >
-              {showHomeroomSection ? 'Hide Details' : 'Show Details'}
-            </button>
+      <div className="card space-y-3">
+        <div>
+          <p className="text-sm font-semibold text-slate-900">Submit Marks</p>
+          <p className="text-xs text-slate-500">
+            Real-world flow: select academic year, term, class and subject, then
+            enter marks across the class roster.
+          </p>
+        </div>
+
+        <div className="space-y-3">
+          <div className="grid gap-3 md:grid-cols-4">
+            <Select
+              label="Academic Year"
+              name="academicYear"
+              value={markFormData.academicYear}
+              onChange={(event) =>
+                handleHierarchyChange("academicYear", event.target.value)
+              }
+              options={academicYearOptions}
+            />
+            <Select
+              label="Term"
+              name="termKey"
+              value={markFormData.termKey}
+              onChange={(event) =>
+                handleHierarchyChange("termKey", event.target.value)
+              }
+              options={termOptions}
+              disabled={!markFormData.academicYear}
+            />
+            <Select
+              label="Class / Section"
+              name="classId"
+              value={markFormData.classId}
+              onChange={(event) =>
+                handleHierarchyChange("classId", event.target.value)
+              }
+              options={classChoices.map((classChoice) => ({
+                value: classChoice.value,
+                label: classChoice.label,
+              }))}
+              disabled={!markFormData.termKey}
+            />
           </div>
 
-          {homeroomStats && (
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-              <div className="metric-item bg-blue-50">
-                <p className="metric-label">Total Students</p>
-                <p className="metric-value">{homeroomStats.totalStudents}</p>
-              </div>
-              <div className="metric-item bg-green-50">
-                <p className="metric-label">Passing</p>
-                <p className="metric-value">{homeroomStats.passCount}</p>
-              </div>
-              <div className="metric-item bg-red-50">
-                <p className="metric-label">Failing</p>
-                <p className="metric-value">{homeroomStats.failCount}</p>
-              </div>
-              <div className="metric-item bg-yellow-50">
-                <p className="metric-label">Incomplete</p>
-                <p className="metric-value">{homeroomStats.incompleteCount}</p>
-              </div>
-              <div className="metric-item bg-purple-50">
-                <p className="metric-label">Class Average</p>
-                <p className="metric-value">{homeroomStats.averageScore}</p>
-              </div>
-            </div>
-          )}
+          <div className="grid gap-3 md:grid-cols-3">
+            <Select
+              label="Subject"
+              name="subjectId"
+              value={markFormData.subjectId}
+              onChange={(event) =>
+                handleHierarchyChange("subjectId", event.target.value)
+              }
+              options={subjectChoices}
+              disabled={!markFormData.classId}
+            />
+          </div>
 
-          {showHomeroomSection && (
-            <div className="space-y-4">
-              {/* Mark Completion Status */}
-              {markCompletionQuery.data && (
-                <div className="card">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-semibold text-slate-800">Mark Completion Status</h3>
-                    {markCompletionQuery.data.allMarksComplete ? (
-                      <span className="inline-flex items-center rounded-full px-3 py-1 text-sm font-medium bg-green-100 text-green-800">
-                        ✓ All Marks Complete
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center rounded-full px-3 py-1 text-sm font-medium bg-yellow-100 text-yellow-800">
-                        ⚠ Marks Pending
-                      </span>
-                    )}
-                  </div>
-
-                  {markCompletionQuery.data.pendingSubjects && markCompletionQuery.data.pendingSubjects.length > 0 && (
-                    <div className="space-y-2">
-                      <p className="text-sm font-medium text-slate-700">Pending Subjects:</p>
-                      <div className="space-y-2">
-                        {markCompletionQuery.data.pendingSubjects.map((subject) => (
-                          <div key={subject.subjectId} className="flex items-center justify-between p-3 bg-yellow-50 rounded-lg">
-                            <div>
-                              <p className="font-medium text-slate-800">{subject.subjectName}</p>
-                              <p className="text-sm text-slate-600">
-                                {subject.submittedCount} / {subject.totalStudents} marks submitted
-                              </p>
-                              {subject.teachers && subject.teachers.length > 0 && (
-                                <p className="text-xs text-slate-500 mt-1">
-                                  Teacher: {subject.teachers.map(t => t.fullName).join(', ')}
-                                </p>
-                              )}
-                            </div>
-                            <span className="text-sm font-medium text-yellow-700">
-                              {subject.pendingCount} pending
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {markCompletionQuery.data.allMarksComplete && (
-                    <div className="text-center py-4">
-                      <p className="text-slate-600">All marks have been submitted for this class.</p>
-                      {!homeroomStats?.resultsPublished && (
-                        <button
-                          onClick={async () => {
-                            try {
-                              await classApi.publishResults(homeroomClass.classId);
-                              notify({ type: 'success', message: 'Results published successfully' });
-                              await refreshAll();
-                            } catch (error) {
-                              notify({ type: 'error', message: error.message || 'Failed to publish results' });
-                            }
-                          }}
-                          className="mt-3 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700"
-                        >
-                          Publish Results
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Student Rankings */}
-              {homeroomReportQuery.data && homeroomReportQuery.data.students && (
-                <TableSection title="Student Rankings & Performance">
-                  <Table
-                    rows={homeroomReportQuery.data.students}
-                    loading={homeroomReportQuery.loading}
-                    error={homeroomReportQuery.error}
-                    columns={[
-                      { 
-                        key: "rank", 
-                        title: "Rank",
-                        render: (row) => row.rank || '-'
-                      },
-                      { 
-                        key: "student", 
-                        title: "Student",
-                        render: (row) => (
-                          <div>
-                            <p className="font-medium">{row.student?.fullName}</p>
-                            <p className="text-xs text-slate-500">{row.student?.studentSchoolId}</p>
-                          </div>
-                        )
-                      },
-                      { 
-                        key: "average", 
-                        title: "Average",
-                        render: (row) => row.average !== null ? row.average.toFixed(1) : '-'
-                      },
-                      { 
-                        key: "status", 
-                        title: "Status",
-                        render: (row) => (
-                          <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
-                            row.status === 'PASS' 
-                              ? 'bg-green-100 text-green-800' 
-                              : row.status === 'FAIL'
-                              ? 'bg-red-100 text-red-800'
-                              : 'bg-yellow-100 text-yellow-800'
-                          }`}>
-                            {row.status}
-                          </span>
-                        )
-                      },
-                      {
-                        key: "marks",
-                        title: "Marks",
-                        render: (row) => (
-                          <button
-                            onClick={() => {
-                              // Show marks detail modal
-                              alert(`Marks for ${row.student?.fullName}:\n${row.marks.map(m => `${m.subjectName}: ${m.markObtained}`).join('\n')}`);
-                            }}
-                            className="text-sm text-blue-600 hover:text-blue-800"
-                          >
-                            View Details
-                          </button>
-                        )
-                      }
-                    ]}
-                    searchPlaceholder="Search students..."
-                    pageSize={20}
-                    pageSizeOptions={[10, 20, 50]}
-                  />
-                </TableSection>
-              )}
-
-              {/* Subject Performance Summary */}
-              {markCompletionQuery.data && markCompletionQuery.data.subjectStatus && (
-                <TableSection title="Subject Performance Overview">
-                  <Table
-                    rows={markCompletionQuery.data.subjectStatus}
-                    loading={markCompletionQuery.loading}
-                    error={markCompletionQuery.error}
-                    columns={[
-                      { key: "subjectName", title: "Subject" },
-                      { key: "subjectCode", title: "Code" },
-                      { 
-                        key: "teachers", 
-                        title: "Teacher(s)",
-                        render: (row) => row.teachers?.map(t => t.fullName).join(', ') || '-'
-                      },
-                      { 
-                        key: "completion", 
-                        title: "Completion",
-                        render: (row) => `${row.submittedCount} / ${row.totalStudents}`
-                      },
-                      { 
-                        key: "isComplete", 
-                        title: "Status",
-                        render: (row) => (
-                          <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
-                            row.isComplete 
-                              ? 'bg-green-100 text-green-800' 
-                              : 'bg-yellow-100 text-yellow-800'
-                          }`}>
-                            {row.isComplete ? 'Complete' : 'Pending'}
-                          </span>
-                        )
-                      }
-                    ]}
-                    searchPlaceholder="Search subjects..."
-                    pageSize={10}
-                    pageSizeOptions={[10, 20, 50]}
-                  />
-                </TableSection>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs text-slate-600">
+              {selectedClassMeta?.resultsPublished ? (
+                <span className="font-semibold text-rose-600">
+                  This class is published. Mark entry is locked.
+                </span>
+              ) : !selectedSubjectMeta ? (
+                <span className="font-semibold text-amber-700">
+                  Select a subject to open the class gradebook.
+                </span>
+              ) : (
+                <span>
+                  Subject: <strong>{selectedSubjectMeta.label}</strong>. Enter
+                  marks per row and save.
+                </span>
               )}
             </div>
-          )}
+            <Button
+              type="button"
+              loading={bulkSaving}
+              disabled={
+                !teacherId ||
+                !selectedSubjectMeta ||
+                selectedClassMeta?.resultsPublished ||
+                loadingRoster
+              }
+              onClick={handleSaveAllMarks}
+            >
+              Save All Filled Marks
+            </Button>
+          </div>
+
+          {selectedSubjectMeta ? (
+            <div className="overflow-x-auto rounded-xl border border-slate-200">
+              <table className="min-w-full divide-y divide-slate-200">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">
+                      Student ID
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">
+                      Student Name
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">
+                      Current Mark
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">
+                      Enter Mark (1-100)
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">
+                      Action
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 bg-white">
+                  {loadingRoster ? (
+                    <tr>
+                      <td
+                        colSpan={5}
+                        className="px-3 py-4 text-sm text-slate-500"
+                      >
+                        Loading class roster...
+                      </td>
+                    </tr>
+                  ) : gradebookRows.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={5}
+                        className="px-3 py-4 text-sm text-slate-500"
+                      >
+                        No students found for selected class.
+                      </td>
+                    </tr>
+                  ) : (
+                    gradebookRows.map((row) => {
+                      const draftValue = draftMarks[row.enrollmentId] ?? "";
+                      const currentMarkDisplay =
+                        row.existingMarkValue === null ||
+                        row.existingMarkValue === undefined
+                          ? "Not entered"
+                          : row.existingMarkValue;
+
+                      return (
+                        <tr key={row.enrollmentId}>
+                          <td className="px-3 py-2 text-sm text-slate-700">
+                            {row.studentSchoolId}
+                          </td>
+                          <td className="px-3 py-2 text-sm text-slate-800">
+                            {row.studentName}
+                          </td>
+                          <td className="px-3 py-2 text-sm text-slate-700">
+                            {currentMarkDisplay}
+                          </td>
+                          <td className="px-3 py-2">
+                            <input
+                              type="number"
+                              min="1"
+                              max="100"
+                              step="1"
+                              value={draftValue}
+                              onChange={(event) => {
+                                const value = event.target.value;
+                                setDraftMarks((prev) => ({
+                                  ...prev,
+                                  [row.enrollmentId]: value,
+                                }));
+                              }}
+                              className="w-28 rounded-lg border border-slate-300 px-2 py-1 text-sm outline-none focus:border-emerald-500"
+                              disabled={
+                                selectedClassMeta?.resultsPublished ||
+                                bulkSaving
+                              }
+                            />
+                          </td>
+                          <td className="px-3 py-2">
+                            <Button
+                              type="button"
+                              loading={savingEnrollmentId === row.enrollmentId}
+                              disabled={
+                                selectedClassMeta?.resultsPublished ||
+                                bulkSaving ||
+                                savingEnrollmentId === row.enrollmentId
+                              }
+                              onClick={() => handleSaveSingleMark(row)}
+                            >
+                              {row.existingMarkId ? "Update" : "Save"}
+                            </Button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
         </div>
-      )}
+      </div>
 
-      {/* Assigned Classes and Subjects with Mark Submission Status */}
+      <div className="card space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-sm font-semibold text-slate-900">
+              Generate Class Report
+            </p>
+            <p className="text-xs text-slate-500">
+              Reports are available for assigned classes. Full roster and
+              student cards are available only for your homeroom class.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              onClick={() => generateClassReport()}
+              loading={reportLoading}
+              disabled={!markFormData.classId}
+            >
+              Generate Report
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={generateHomeroomRoster}
+              disabled={!homeroomClassId}
+            >
+              Load Homeroom Roster
+            </Button>
+          </div>
+        </div>
+
+        {reportError ? (
+          <StateView
+            type="error"
+            title="Report generation failed"
+            description={reportError}
+          />
+        ) : null}
+
+        {classReport ? (
+          <div className="space-y-2 rounded-xl border border-emerald-100 bg-emerald-50/40 p-3">
+            <p className="text-sm font-semibold text-slate-800">
+              {classReport.className} ({classReport.grade}) -{" "}
+              {classReport.term?.academicYear} Term {classReport.term?.semester}
+            </p>
+            <p className="text-xs text-slate-600">
+              Students: {(classReport.students || []).length} | Subjects:{" "}
+              {(classReport.subjectCompletionStatus || []).length} | Marks
+              Complete: {classReport.allMarksComplete ? "Yes" : "No"}
+            </p>
+            {!canShowHomeroomData ? (
+              <p className="text-xs font-semibold text-amber-700">
+                This class is not your homeroom class. Roster and student cards
+                are hidden.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
+      {classReport ? (
+        <TableSection title="Class Report - Student Performance">
+          <Table
+            rows={reportRows}
+            loading={reportLoading}
+            error={reportError}
+            columns={[
+              { key: "rank", title: "Rank" },
+              { key: "studentId", title: "Student ID" },
+              {
+                key: "studentName",
+                title: "Student",
+                render: (row) => (
+                  <div>
+                    <p className="font-medium">{row.studentName}</p>
+                    <p className="text-xs text-slate-500">
+                      {row.studentSchoolId}
+                    </p>
+                  </div>
+                ),
+              },
+              { key: "gender", title: "Gender" },
+              { key: "total", title: "Total" },
+              { key: "average", title: "Average" },
+              { key: "status", title: "Status" },
+            ]}
+            searchPlaceholder="Search students in report..."
+            pageSize={15}
+            pageSizeOptions={[15, 30, 60]}
+          />
+        </TableSection>
+      ) : null}
+
       <TableSection title="Your Class Assignments">
         <Table
           rows={assignmentStats}
@@ -657,20 +1124,29 @@ const TeacherDashboard = () => {
           error={assignmentsQuery.error}
           columns={[
             { key: "className", title: "Class" },
+            { key: "academicYear", title: "Academic Year" },
+            { key: "semester", title: "Term" },
             { key: "subjectName", title: "Subject" },
+            {
+              key: "isHomeroomClass",
+              title: "Homeroom",
+              render: (row) => (row.isHomeroomClass ? "Yes" : "No"),
+            },
             { key: "marksSubmitted", title: "Marks Submitted" },
-            { 
-              key: "resultsPublished", 
+            {
+              key: "resultsPublished",
               title: "Status",
               render: (row) => (
-                <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
-                  row.resultsPublished 
-                    ? 'bg-green-100 text-green-800' 
-                    : 'bg-yellow-100 text-yellow-800'
-                }`}>
-                  {row.resultsPublished ? 'Published' : 'In Progress'}
+                <span
+                  className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
+                    row.resultsPublished
+                      ? "bg-green-100 text-green-800"
+                      : "bg-yellow-100 text-yellow-800"
+                  }`}
+                >
+                  {row.resultsPublished ? "Published" : "In Progress"}
                 </span>
-              )
+              ),
             },
             {
               key: "actions",
@@ -678,21 +1154,28 @@ const TeacherDashboard = () => {
               render: (row) => (
                 <div className="flex gap-2">
                   <button
-                    onClick={() => handleOpenMarkEntry(row)}
-                    disabled={row.resultsPublished}
-                    className="text-sm text-emerald-600 hover:text-emerald-800 disabled:text-gray-400 disabled:cursor-not-allowed"
+                    onClick={() => applyAssignmentToHierarchy(row)}
+                    className="text-sm text-emerald-600 hover:text-emerald-800"
                   >
-                    Enter Marks
+                    Use In Form
                   </button>
                   <button
-                    onClick={() => handleViewRoster(row)}
+                    onClick={() => generateClassReport(row.classId)}
                     className="text-sm text-blue-600 hover:text-blue-800"
                   >
-                    View Roster
+                    Generate Report
                   </button>
+                  {row.isHomeroomClass ? (
+                    <button
+                      onClick={generateHomeroomRoster}
+                      className="text-sm text-indigo-600 hover:text-indigo-800"
+                    >
+                      Roster & Cards
+                    </button>
+                  ) : null}
                 </div>
-              )
-            }
+              ),
+            },
           ]}
           searchPlaceholder="Search assignments..."
           pageSize={10}
@@ -700,20 +1183,32 @@ const TeacherDashboard = () => {
         />
       </TableSection>
 
-      <div className="grid gap-3 md:grid-cols-2">
-        <Link to="/marks" className="card">
-          <p className="text-sm font-semibold">Open Marks Entry</p>
-          <p className="text-xs text-slate-500">
-            Submit and adjust marks for your classes.
-          </p>
-        </Link>
-        <Link to="/reports" className="card">
-          <p className="text-sm font-semibold">Open Reports</p>
-          <p className="text-xs text-slate-500">
-            Track outcomes and identify support needs.
-          </p>
-        </Link>
-      </div>
+      <TableSection title="Student Marks Overview (Unique Year, Class, Term)">
+        <Table
+          rows={marksOverviewRows}
+          loading={academicReportQuery.loading && !marksOverviewRows.length}
+          error={academicReportQuery.error}
+          columns={[
+            { key: "studentSchoolId", title: "Student ID" },
+            { key: "studentName", title: "Student" },
+            { key: "classLevel", title: "Class" },
+            { key: "classSection", title: "Section" },
+            { key: "academicYear", title: "Academic Year" },
+            { key: "term", title: "Term" },
+            { key: "total", title: "Total" },
+            {
+              key: "average",
+              title: "Average",
+              render: (row) => Number(row.average || 0).toFixed(1),
+            },
+            { key: "rank", title: "Rank" },
+            { key: "status", title: "Status" },
+          ]}
+          searchPlaceholder="Search student marks overview..."
+          pageSize={12}
+          pageSizeOptions={[12, 24, 48]}
+        />
+      </TableSection>
 
       <TableSection title="Recent Marks Submitted">
         <Table
@@ -724,10 +1219,10 @@ const TeacherDashboard = () => {
             { key: "student_name", title: "Student" },
             { key: "class_name", title: "Class" },
             { key: "subject_name", title: "Subject" },
-            { 
-              key: "mark_obtained", 
+            {
+              key: "mark_obtained",
               title: "Mark",
-              render: (row) => row.mark_obtained || row.markObtained || 0
+              render: (row) => row.mark_obtained || row.markObtained || 0,
             },
             { key: "submitted_on", title: "Submitted" },
           ]}
@@ -737,150 +1232,94 @@ const TeacherDashboard = () => {
         />
       </TableSection>
 
-      <TableSection title="Students Requiring Support">
-        <Table
-          rows={supportRows}
-          loading={reportsQuery.loading && !supportRows.length}
-          error={reportsQuery.error}
-          columns={[
-            { key: "student_school_id", title: "Student ID" },
-            { key: "full_name", title: "Student" },
-            { key: "class_name", title: "Class" },
-            { key: "average_score", title: "Average" },
-            { key: "status", title: "Status" },
-          ]}
-          searchPlaceholder="Search support list..."
-          pageSize={12}
-          pageSizeOptions={[12, 24, 36]}
-        />
+      <TableSection title="Homeroom Roster (Full Info)">
+        {!canShowHomeroomData ? (
+          <StateView
+            type="empty"
+            title="Homeroom roster not generated"
+            description="Use Load Homeroom Roster to generate full student roster and cards for your homeroom class."
+          />
+        ) : (
+          <Table
+            rows={reportRows}
+            loading={reportLoading || loadingRoster}
+            error={null}
+            columns={[
+              { key: "studentId", title: "Student ID" },
+              { key: "studentSchoolId", title: "School ID" },
+              { key: "studentName", title: "Name" },
+              { key: "gender", title: "Gender" },
+              { key: "total", title: "Total" },
+              { key: "average", title: "Average" },
+              { key: "rank", title: "Rank" },
+              { key: "status", title: "Status" },
+            ]}
+            searchPlaceholder="Search homeroom roster..."
+            pageSize={12}
+            pageSizeOptions={[12, 24, 48]}
+          />
+        )}
       </TableSection>
 
-      {/* Mark Entry Modal */}
-      <Modal
-        isOpen={showMarkEntry}
-        onClose={() => {
-          setShowMarkEntry(false);
-          setAutoSaveStatus('');
-          if (autoSaveTimeoutRef.current) {
-            clearTimeout(autoSaveTimeoutRef.current);
-          }
-        }}
-        title={`Enter Marks - ${selectedAssignment?.className} - ${selectedAssignment?.subjectName}`}
-      >
-        <form onSubmit={handleSubmitMark} className="space-y-4">
-          <Select
-            label="Student"
-            name="enrollmentId"
-            value={markFormData.enrollmentId}
-            onChange={(e) => handleMarkChange('enrollmentId', e.target.value)}
-            options={classRoster.map((enrollment) => ({
-              value: enrollment.enrollment_id || enrollment.enrollmentId,
-              label: `${enrollment.student?.full_name || enrollment.student?.fullName} (${enrollment.student?.student_school_id || enrollment.student?.studentSchoolId})`,
-            }))}
-            disabled={loadingRoster}
-          />
-          
-          <div>
-            <Input
-              label="Mark Obtained (0-100)"
-              name="markObtained"
-              type="number"
-              min="0"
-              max="100"
-              value={markFormData.markObtained}
-              onChange={(e) => handleMarkChange('markObtained', e.target.value)}
-              placeholder="Enter mark between 0 and 100"
-            />
-            {autoSaveStatus && (
-              <div className="mt-2 text-sm">
-                {autoSaveStatus === 'saving' && (
-                  <span className="text-blue-600">💾 Auto-saving...</span>
-                )}
-                {autoSaveStatus === 'saved' && (
-                  <span className="text-green-600">✓ Auto-saved successfully</span>
-                )}
-                {autoSaveStatus === 'error' && (
-                  <span className="text-red-600">✗ Auto-save failed</span>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="flex justify-end gap-2">
+      {canShowHomeroomData ? (
+        <div className="card space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-sm font-semibold text-slate-900">
+                Student Cards ({classReport?.className} |{" "}
+                {classReport?.term?.academicYear} Term{" "}
+                {classReport?.term?.semester})
+              </p>
+              <p className="text-xs text-slate-500">
+                Section average range: {sectionAverageRange}
+              </p>
+            </div>
             <Button
               type="button"
-              onClick={() => {
-                setShowMarkEntry(false);
-                setAutoSaveStatus('');
-                if (autoSaveTimeoutRef.current) {
-                  clearTimeout(autoSaveTimeoutRef.current);
-                }
-              }}
-              disabled={submittingMark}
+              variant="secondary"
+              onClick={() => setShowStudentCards((prev) => !prev)}
             >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              loading={submittingMark}
-            >
-              Submit Mark
+              {showStudentCards ? "Hide Cards" : "Generate Cards"}
             </Button>
           </div>
-        </form>
-      </Modal>
 
-      {/* Class Roster Modal */}
-      <Modal
-        isOpen={selectedClass !== null && !showMarkEntry}
-        onClose={() => {
-          setSelectedClass(null);
-          setSelectedAssignment(null);
-          setClassRoster([]);
-        }}
-        title={`Class Roster - ${selectedAssignment?.className} - ${selectedAssignment?.subjectName}`}
-      >
-        <div className="space-y-4">
-          {loadingRoster ? (
-            <div className="text-center py-8">
-              <p className="text-slate-600">Loading roster...</p>
+          {showStudentCards ? (
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {studentCards.map((card) => (
+                <div
+                  key={`${card.studentId}-${card.studentSchoolId}`}
+                  className="rounded-xl border border-emerald-100 bg-white p-3 shadow-sm"
+                >
+                  <p className="text-sm font-semibold text-slate-900">
+                    {card.studentName}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    {card.studentSchoolId} | Gender: {card.gender}
+                  </p>
+                  <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-700">
+                    <p>Academic Year: {card.academicYear}</p>
+                    <p>Term: {card.term}</p>
+                    <p>Class: {card.classLevel}</p>
+                    <p>Section: {card.section}</p>
+                    <p>Total: {card.total}</p>
+                    <p>Average: {card.average}</p>
+                    <p>Rank: {card.rank}</p>
+                    <p>Status: {card.status}</p>
+                  </div>
+                  <p className="mt-2 text-xs font-semibold text-emerald-700">
+                    Section Range: {card.sectionRange}
+                  </p>
+                  <div className="mt-2 rounded-lg bg-emerald-50 p-2 text-xs text-slate-700">
+                    {(card.marks || []).length > 0
+                      ? card.marks.join(" | ")
+                      : "No submitted marks yet"}
+                  </div>
+                </div>
+              ))}
             </div>
-          ) : classRoster.length === 0 ? (
-            <StateView
-              type="empty"
-              title="No students enrolled"
-              description="This class has no enrolled students yet."
-            />
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Student ID</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Enrolled</th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {classRoster.map((enrollment) => (
-                    <tr key={enrollment.enrollment_id || enrollment.enrollmentId}>
-                      <td className="px-4 py-3 text-sm text-gray-900">
-                        {enrollment.student?.student_school_id || enrollment.student?.studentSchoolId}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-900">
-                        {enrollment.student?.full_name || enrollment.student?.fullName}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-500">
-                        {formatDate(enrollment.enrolled_at || enrollment.enrolledAt)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          ) : null}
         </div>
-      </Modal>
+      ) : null}
     </div>
   );
 };

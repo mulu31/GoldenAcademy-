@@ -1,6 +1,45 @@
 import { useMemo, useState } from "react";
 import { AlertCircle, Inbox, LoaderCircle } from "lucide-react";
 
+const normalizeSearchValue = (value) =>
+  String(value ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+const collectSearchTokens = (value, tokens) => {
+  if (value === null || value === undefined) return;
+
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    tokens.push(String(value));
+    return;
+  }
+
+  if (value instanceof Date) {
+    tokens.push(value.toISOString());
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectSearchTokens(item, tokens));
+    return;
+  }
+
+  if (typeof value === "object") {
+    Object.values(value).forEach((item) => collectSearchTokens(item, tokens));
+  }
+};
+
+const buildRowSearchText = (row) => {
+  const tokens = [];
+  collectSearchTokens(row, tokens);
+  return normalizeSearchValue(tokens.join(" "));
+};
+
 const Table = ({
   columns = [],
   rows = [],
@@ -18,14 +57,8 @@ const Table = ({
 
   const filteredRows = useMemo(() => {
     if (!search) return rows;
-    const value = search.toLowerCase();
-    return rows.filter((row) =>
-      Object.values(row).some((cell) =>
-        String(cell ?? "")
-          .toLowerCase()
-          .includes(value),
-      ),
-    );
+    const value = normalizeSearchValue(search);
+    return rows.filter((row) => buildRowSearchText(row).includes(value));
   }, [rows, search]);
 
   const sortedRows = useMemo(() => {

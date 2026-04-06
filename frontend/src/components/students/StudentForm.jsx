@@ -15,18 +15,18 @@ const StudentForm = ({ initialValues, onSubmit, loading }) => {
     <form onSubmit={form.handleSubmit} className="grid gap-3 md:grid-cols-3">
       <Input
         label="School ID"
-        name="student_school_id"
-        value={form.values.student_school_id}
+        name="studentSchoolId"
+        value={form.values.studentSchoolId}
         onChange={form.handleChange}
-        error={form.errors.student_school_id}
+        error={form.errors.studentSchoolId}
         required
       />
       <Input
         label="Full Name"
-        name="full_name"
-        value={form.values.full_name}
+        name="fullName"
+        value={form.values.fullName}
         onChange={form.handleChange}
-        error={form.errors.full_name}
+        error={form.errors.fullName}
         required
       />
       <Select

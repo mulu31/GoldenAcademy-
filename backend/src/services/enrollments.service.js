@@ -8,13 +8,15 @@ export const enrollmentsService = {
    */
   list: async (filters = {}) => {
     const { classId, termId, page = 1, limit = 50 } = filters;
-    const offset = (page - 1) * limit;
-    
+    const safePage = Math.max(1, parseInt(page, 10) || 1);
+    const safeLimit = Math.min(1000, Math.max(1, parseInt(limit, 10) || 50));
+    const offset = (safePage - 1) * safeLimit;
+
     // Build dynamic WHERE clause
     const conditions = [];
     const params = [];
     let paramCount = 1;
-    
+
     if (classId) {
       conditions.push(`se.class_id = $${paramCount++}`);
       params.push(parseInt(classId));
@@ -23,19 +25,19 @@ export const enrollmentsService = {
       conditions.push(`c.term_id = $${paramCount++}`);
       params.push(parseInt(termId));
     }
-    
-    const whereClause = conditions.length > 0 
-      ? `WHERE ${conditions.join(' AND ')}` 
-      : '';
-    
+
+    const whereClause =
+      conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
     // Add limit and offset to params
     const limitParam = `$${paramCount++}`;
     const offsetParam = `$${paramCount++}`;
-    params.push(limit, offset);
-    
+    params.push(safeLimit, offset);
+
     // Execute queries in parallel
     const [enrollmentsResult, countResult] = await Promise.all([
-      pool.query(`
+      pool.query(
+        `
         SELECT 
           se.enrollment_id,
           se.student_id,
@@ -67,31 +69,36 @@ export const enrollmentsService = {
         ${whereClause}
         ORDER BY se.enrolled_at DESC
         LIMIT ${limitParam} OFFSET ${offsetParam}
-      `, params),
-      pool.query(`
+      `,
+        params,
+      ),
+      pool.query(
+        `
         SELECT COUNT(*) as count
         FROM student_enrollments se
         JOIN classes c ON se.class_id = c.class_id
         ${whereClause}
-      `, params.slice(0, -2)) // Remove limit and offset for count query
+      `,
+        params.slice(0, -2),
+      ), // Remove limit and offset for count query
     ]);
-    
-    const enrollments = enrollmentsResult.rows.map(row => ({
+
+    const enrollments = enrollmentsResult.rows.map((row) => ({
       enrollmentId: row.enrollment_id,
       studentId: row.student_id,
       classId: row.class_id,
       enrolledAt: row.enrolled_at,
       student: row.student,
-      class: row.class
+      class: row.class,
     }));
-    
+
     const total = parseInt(countResult.rows[0].count);
-    
+
     return {
       enrollments,
       total,
-      page,
-      totalPages: Math.ceil(total / limit)
+      page: safePage,
+      totalPages: Math.ceil(total / safeLimit),
     };
   },
 
@@ -102,63 +109,130 @@ export const enrollmentsService = {
   enrollStudent: async ({ studentId, classId }) => {
     const parsedStudentId = parseInt(studentId);
     const parsedClassId = parseInt(classId);
-    
+
     // Verify student exists
     const studentResult = await pool.query(
-      'SELECT student_id FROM students WHERE student_id = $1',
-      [parsedStudentId]
+      "SELECT student_id FROM students WHERE student_id = $1",
+      [parsedStudentId],
     );
-    
+
     if (studentResult.rows.length === 0) {
-      throw new ApiError(404, 'Student not found');
+      throw new ApiError(404, "Student not found");
     }
-    
+
     // Verify class exists and get term info
-    const classResult = await pool.query(`
+    const classResult = await pool.query(
+      `
       SELECT c.class_id, c.class_name, c.term_id, c.grade,
              t.term_id, t.academic_year, t.semester
       FROM classes c
       JOIN terms t ON c.term_id = t.term_id
       WHERE c.class_id = $1
-    `, [parsedClassId]);
-    
+    `,
+      [parsedClassId],
+    );
+
     if (classResult.rows.length === 0) {
-      throw new ApiError(404, 'Class not found');
+      throw new ApiError(404, "Class not found");
     }
-    
+
     const classData = classResult.rows[0];
-    
+
     // Check if student is already enrolled in another class for the same term
-    const existingEnrollmentResult = await pool.query(`
+    const existingEnrollmentResult = await pool.query(
+      `
       SELECT se.enrollment_id, se.class_id, c.class_name
       FROM student_enrollments se
       JOIN classes c ON se.class_id = c.class_id
       WHERE se.student_id = $1 AND c.term_id = $2
-    `, [parsedStudentId, classData.term_id]);
-    
+    `,
+      [parsedStudentId, classData.term_id],
+    );
+
     if (existingEnrollmentResult.rows.length > 0) {
       const existingEnrollment = existingEnrollmentResult.rows[0];
       if (existingEnrollment.class_id !== parsedClassId) {
         throw new ApiError(
           409,
-          `Student is already enrolled in class ${existingEnrollment.class_name} for this term`
+          `Student is already enrolled in class ${existingEnrollment.class_name} for this term`,
         );
       }
     }
-    
+
+    // Academic progression rule:
+    // student can join Term II only after completing/publishing Term I in the same academic year.
+    if (classData.semester === "II") {
+      const termOneResult = await pool.query(
+        `
+        SELECT se.enrollment_id, c.class_name, c.results_published
+        FROM student_enrollments se
+        JOIN classes c ON se.class_id = c.class_id
+        JOIN terms t ON c.term_id = t.term_id
+        WHERE se.student_id = $1
+          AND t.academic_year = $2
+          AND t.semester = 'I'
+        ORDER BY se.enrolled_at DESC
+        LIMIT 1
+      `,
+        [parsedStudentId, classData.academic_year],
+      );
+
+      if (termOneResult.rows.length === 0) {
+        throw new ApiError(
+          409,
+          `Student must complete Term I before enrolling in Term II for academic year ${classData.academic_year}`,
+        );
+      }
+
+      if (!termOneResult.rows[0].results_published) {
+        throw new ApiError(
+          409,
+          `Cannot enroll in Term II until Term I results are published for class ${termOneResult.rows[0].class_name}`,
+        );
+      }
+    }
+
+    // Prevent backward enrollment into Term I after a Term II enrollment exists in the same year.
+    if (classData.semester === "I") {
+      const termTwoResult = await pool.query(
+        `
+        SELECT se.enrollment_id
+        FROM student_enrollments se
+        JOIN classes c ON se.class_id = c.class_id
+        JOIN terms t ON c.term_id = t.term_id
+        WHERE se.student_id = $1
+          AND t.academic_year = $2
+          AND t.semester = 'II'
+        LIMIT 1
+      `,
+        [parsedStudentId, classData.academic_year],
+      );
+
+      if (termTwoResult.rows.length > 0) {
+        throw new ApiError(
+          409,
+          `Student is already enrolled in Term II for academic year ${classData.academic_year} and cannot be enrolled back into Term I`,
+        );
+      }
+    }
+
     // Enroll student (upsert to handle re-enrollment in same class)
-    const enrollmentResult = await pool.query(`
+    const enrollmentResult = await pool.query(
+      `
       INSERT INTO student_enrollments (student_id, class_id, enrolled_at)
       VALUES ($1, $2, CURRENT_TIMESTAMP)
       ON CONFLICT (student_id, class_id)
       DO UPDATE SET enrolled_at = CURRENT_TIMESTAMP
       RETURNING enrollment_id
-    `, [parsedStudentId, parsedClassId]);
-    
+    `,
+      [parsedStudentId, parsedClassId],
+    );
+
     const enrollmentId = enrollmentResult.rows[0].enrollment_id;
-    
+
     // Fetch complete enrollment with relations
-    const result = await pool.query(`
+    const result = await pool.query(
+      `
       SELECT 
         se.enrollment_id,
         se.student_id,
@@ -192,8 +266,10 @@ export const enrollmentsService = {
       JOIN classes c ON se.class_id = c.class_id
       JOIN terms t ON c.term_id = t.term_id
       WHERE se.enrollment_id = $1
-    `, [enrollmentId]);
-    
+    `,
+      [enrollmentId],
+    );
+
     const row = result.rows[0];
     return {
       enrollmentId: row.enrollment_id,
@@ -201,7 +277,7 @@ export const enrollmentsService = {
       classId: row.class_id,
       enrolledAt: row.enrolled_at,
       student: row.student,
-      class: row.class
+      class: row.class,
     };
   },
 
@@ -211,28 +287,29 @@ export const enrollmentsService = {
    */
   getEnrollmentHistory: async (studentId) => {
     const parsedStudentId = parseInt(studentId);
-    
+
     // Verify student exists
     const studentResult = await pool.query(
-      'SELECT student_id, student_school_id, full_name, gender, created_at, updated_at FROM students WHERE student_id = $1',
-      [parsedStudentId]
+      "SELECT student_id, student_school_id, full_name, gender, created_at, updated_at FROM students WHERE student_id = $1",
+      [parsedStudentId],
     );
-    
+
     if (studentResult.rows.length === 0) {
-      throw new ApiError(404, 'Student not found');
+      throw new ApiError(404, "Student not found");
     }
-    
+
     const student = {
       studentId: studentResult.rows[0].student_id,
       studentSchoolId: studentResult.rows[0].student_school_id,
       fullName: studentResult.rows[0].full_name,
       gender: studentResult.rows[0].gender,
       createdAt: studentResult.rows[0].created_at,
-      updatedAt: studentResult.rows[0].updated_at
+      updatedAt: studentResult.rows[0].updated_at,
     };
-    
+
     // Get enrollments with class, term, homeroom teacher, and marks
-    const enrollmentsResult = await pool.query(`
+    const enrollmentsResult = await pool.query(
+      `
       SELECT 
         se.enrollment_id,
         se.student_id,
@@ -291,20 +368,22 @@ export const enrollmentsService = {
                t.term_id, t.academic_year, t.semester,
                ht.teacher_id, ht.full_name
       ORDER BY t.academic_year DESC, t.semester DESC
-    `, [parsedStudentId]);
-    
-    const enrollments = enrollmentsResult.rows.map(row => ({
+    `,
+      [parsedStudentId],
+    );
+
+    const enrollments = enrollmentsResult.rows.map((row) => ({
       enrollmentId: row.enrollment_id,
       studentId: row.student_id,
       classId: row.class_id,
       enrolledAt: row.enrolled_at,
       class: row.class,
-      marks: row.marks
+      marks: row.marks,
     }));
-    
+
     return {
       student,
-      enrollments
+      enrollments,
     };
   },
 
@@ -316,45 +395,52 @@ export const enrollmentsService = {
     const parsedCurrentClassId = parseInt(currentClassId);
     const parsedNextClassId = parseInt(nextClassId);
     const parsedNextTermId = parseInt(nextTermId);
-    
+
     // Verify current class exists
-    const currentClassResult = await pool.query(`
-      SELECT c.class_id, c.class_name, c.grade, c.term_id,
+    const currentClassResult = await pool.query(
+      `
+      SELECT c.class_id, c.class_name, c.grade, c.term_id, c.results_published,
              t.term_id, t.academic_year, t.semester
       FROM classes c
       JOIN terms t ON c.term_id = t.term_id
       WHERE c.class_id = $1
-    `, [parsedCurrentClassId]);
-    
+    `,
+      [parsedCurrentClassId],
+    );
+
     if (currentClassResult.rows.length === 0) {
-      throw new ApiError(404, 'Current class not found');
+      throw new ApiError(404, "Current class not found");
     }
-    
+
     const currentClass = {
       classId: currentClassResult.rows[0].class_id,
       className: currentClassResult.rows[0].class_name,
       grade: currentClassResult.rows[0].grade,
       termId: currentClassResult.rows[0].term_id,
+      resultsPublished: currentClassResult.rows[0].results_published,
       term: {
         termId: currentClassResult.rows[0].term_id,
         academicYear: currentClassResult.rows[0].academic_year,
-        semester: currentClassResult.rows[0].semester
-      }
+        semester: currentClassResult.rows[0].semester,
+      },
     };
-    
+
     // Verify next class exists
-    const nextClassResult = await pool.query(`
+    const nextClassResult = await pool.query(
+      `
       SELECT c.class_id, c.class_name, c.grade, c.term_id,
              t.term_id, t.academic_year, t.semester
       FROM classes c
       JOIN terms t ON c.term_id = t.term_id
       WHERE c.class_id = $1
-    `, [parsedNextClassId]);
-    
+    `,
+      [parsedNextClassId],
+    );
+
     if (nextClassResult.rows.length === 0) {
-      throw new ApiError(404, 'Next class not found');
+      throw new ApiError(404, "Next class not found");
     }
-    
+
     const nextClass = {
       classId: nextClassResult.rows[0].class_id,
       className: nextClassResult.rows[0].class_name,
@@ -363,113 +449,143 @@ export const enrollmentsService = {
       term: {
         termId: nextClassResult.rows[0].term_id,
         academicYear: nextClassResult.rows[0].academic_year,
-        semester: nextClassResult.rows[0].semester
-      }
+        semester: nextClassResult.rows[0].semester,
+      },
     };
-    
+
     // Verify next term exists
     const nextTermResult = await pool.query(
-      'SELECT term_id, academic_year, semester FROM terms WHERE term_id = $1',
-      [parsedNextTermId]
+      "SELECT term_id, academic_year, semester FROM terms WHERE term_id = $1",
+      [parsedNextTermId],
     );
-    
+
     if (nextTermResult.rows.length === 0) {
-      throw new ApiError(404, 'Next term not found');
+      throw new ApiError(404, "Next term not found");
     }
-    
+
     const nextTerm = {
       termId: nextTermResult.rows[0].term_id,
       academicYear: nextTermResult.rows[0].academic_year,
-      semester: nextTermResult.rows[0].semester
+      semester: nextTermResult.rows[0].semester,
     };
-    
+
     // Verify next class belongs to next term
     if (nextClass.termId !== parsedNextTermId) {
-      throw new ApiError(400, 'Next class does not belong to the specified term');
+      throw new ApiError(
+        400,
+        "Next class does not belong to the specified term",
+      );
     }
-    
-    // Verify next term is after current term
-    if (nextTerm.academicYear < currentClass.term.academicYear ||
-        (nextTerm.academicYear === currentClass.term.academicYear && 
-         nextTerm.semester <= currentClass.term.semester)) {
-      throw new ApiError(400, 'Next term must be after current term');
+
+    // Promotion policy: Term I -> Term II in the same academic year only,
+    // and only after Term I results are published.
+    if (currentClass.term.semester !== "I") {
+      throw new ApiError(400, "Promotion can only start from a Term I class");
     }
-    
+
+    if (
+      nextTerm.semester !== "II" ||
+      nextTerm.academicYear !== currentClass.term.academicYear
+    ) {
+      throw new ApiError(
+        400,
+        "Next term for promotion must be Term II of the same academic year",
+      );
+    }
+
+    if (!currentClass.resultsPublished) {
+      throw new ApiError(
+        400,
+        "Cannot promote students before Term I results are published",
+      );
+    }
+
     // Get all students in current class
-    const currentEnrollmentsResult = await pool.query(`
+    const currentEnrollmentsResult = await pool.query(
+      `
       SELECT se.student_id, s.student_school_id, s.full_name
       FROM student_enrollments se
       JOIN students s ON se.student_id = s.student_id
       WHERE se.class_id = $1
-    `, [parsedCurrentClassId]);
-    
+    `,
+      [parsedCurrentClassId],
+    );
+
     if (currentEnrollmentsResult.rows.length === 0) {
-      throw new ApiError(400, 'No students found in current class');
+      throw new ApiError(400, "No students found in current class");
     }
-    
-    const studentIds = currentEnrollmentsResult.rows.map(row => row.student_id);
-    
+
+    const studentIds = currentEnrollmentsResult.rows.map(
+      (row) => row.student_id,
+    );
+
     // Check if any students are already enrolled in the next term
-    const conflictingEnrollmentsResult = await pool.query(`
+    const conflictingEnrollmentsResult = await pool.query(
+      `
       SELECT se.student_id, s.full_name, c.class_name
       FROM student_enrollments se
       JOIN students s ON se.student_id = s.student_id
       JOIN classes c ON se.class_id = c.class_id
       WHERE se.student_id = ANY($1::int[]) AND c.term_id = $2
-    `, [studentIds, parsedNextTermId]);
-    
+    `,
+      [studentIds, parsedNextTermId],
+    );
+
     if (conflictingEnrollmentsResult.rows.length > 0) {
       const conflictNames = conflictingEnrollmentsResult.rows
-        .map(row => `${row.full_name} (already in ${row.class_name})`)
-        .join(', ');
+        .map((row) => `${row.full_name} (already in ${row.class_name})`)
+        .join(", ");
       throw new ApiError(
         409,
-        `Cannot promote: ${conflictingEnrollmentsResult.rows.length} student(s) already enrolled in next term: ${conflictNames}`
+        `Cannot promote: ${conflictingEnrollmentsResult.rows.length} student(s) already enrolled in next term: ${conflictNames}`,
       );
     }
-    
+
     // Use transaction to promote all students
     const client = await pool.connect();
     try {
-      await client.query('BEGIN');
-      
+      await client.query("BEGIN");
+
       // Promote all students (create new enrollments, preserve old ones)
       const promotedEnrollments = [];
       for (const row of currentEnrollmentsResult.rows) {
-        const result = await client.query(`
+        const result = await client.query(
+          `
           INSERT INTO student_enrollments (student_id, class_id, enrolled_at)
           VALUES ($1, $2, CURRENT_TIMESTAMP)
           RETURNING enrollment_id
-        `, [row.student_id, parsedNextClassId]);
-        
+        `,
+          [row.student_id, parsedNextClassId],
+        );
+
         promotedEnrollments.push({
           studentId: row.student_id,
           studentSchoolId: row.student_school_id,
-          fullName: row.full_name
+          fullName: row.full_name,
         });
       }
-      
-      await client.query('COMMIT');
-      
+
+      await client.query("COMMIT");
+
       return {
         currentClass: {
           classId: currentClass.classId,
           className: currentClass.className,
-          term: currentClass.term
+          term: currentClass.term,
         },
         nextClass: {
           classId: nextClass.classId,
           className: nextClass.className,
-          term: nextClass.term
+          term: nextClass.term,
         },
         promotedCount: promotedEnrollments.length,
-        promotedStudents: promotedEnrollments
+        promotedStudents: promotedEnrollments,
       };
     } catch (error) {
-      await client.query('ROLLBACK');
+      await client.query("ROLLBACK");
       handleDatabaseError(error);
     } finally {
       client.release();
     }
-  }
+  },
 };

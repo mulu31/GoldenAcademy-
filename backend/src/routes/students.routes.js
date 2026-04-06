@@ -8,7 +8,7 @@ import {
   updateStudent,
   getStudentById,
   deleteStudent,
-  searchStudents
+  searchStudents,
 } from "../validations/students.validation.js";
 
 const router = Router();
@@ -21,36 +21,31 @@ router.get(
   "/search",
   searchStudents,
   validateRequest,
-  studentsController.search
+  studentsController.search,
 );
 
 // List all students
 router.get("/", studentsController.list);
 
 // Get student by ID
-router.get(
-  "/:id",
-  getStudentById,
-  validateRequest,
-  studentsController.getById
-);
+router.get("/:id", getStudentById, validateRequest, studentsController.getById);
 
 // Create student (REGISTRAR or SYSTEM_ADMIN only)
 router.post(
   "/",
-  authorize("SYSTEM_ADMIN", "REGISTRAR"),
+  authorize("SYSTEM_ADMIN", "REGISTRAR", "DEPARTMENT_ADMIN"),
   createStudent,
   validateRequest,
-  studentsController.create
+  studentsController.create,
 );
 
 // Update student (REGISTRAR or SYSTEM_ADMIN only)
 router.put(
   "/:id",
-  authorize("SYSTEM_ADMIN", "REGISTRAR"),
+  authorize("SYSTEM_ADMIN", "REGISTRAR", "DEPARTMENT_ADMIN"),
   updateStudent,
   validateRequest,
-  studentsController.update
+  studentsController.update,
 );
 
 // Delete student (SYSTEM_ADMIN only)
@@ -59,7 +54,7 @@ router.delete(
   authorize("SYSTEM_ADMIN"),
   deleteStudent,
   validateRequest,
-  studentsController.remove
+  studentsController.remove,
 );
 
 export default router;

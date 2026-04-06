@@ -1,7 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import termApi from "../api/termApi";
 import PageLayout from "../components/layout/PageLayout";
-import Input from "../components/common/Input";
 import Select from "../components/common/Select";
 import Button from "../components/common/Button";
 import Table from "../components/common/Table";
@@ -14,6 +13,31 @@ import { notify } from "../utils/notifications";
 const TermsPage = () => {
   const [saving, setSaving] = useState(false);
   const termQuery = useFetch(() => termApi.getAll(), []);
+
+  const academicYearOptions = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    const generatedYears = Array.from({ length: 6 }, (_, index) => {
+      const startYear = currentYear - 2 + index;
+      return `${startYear}-${startYear + 1}`;
+    });
+
+    const existingYears = (termQuery.data || [])
+      .map((term) => term.academic_year || term.academicYear)
+      .filter(Boolean);
+
+    const uniqueYears = Array.from(
+      new Set([...existingYears, ...generatedYears]),
+    );
+
+    const getSortKey = (academicYear) => {
+      const match = String(academicYear).match(/^(\d{4})/);
+      return match ? Number(match[1]) : 0;
+    };
+
+    return uniqueYears
+      .sort((a, b) => getSortKey(b) - getSortKey(a))
+      .map((academicYear) => ({ value: academicYear, label: academicYear }));
+  }, [termQuery.data]);
 
   const form = useForm({
     initialValues: { academic_year: "", semester: "" },
@@ -28,7 +52,10 @@ const TermsPage = () => {
       } catch (error) {
         notify({
           type: "error",
-          message: error?.response?.data?.message || "Failed to create term",
+          message:
+            error?.response?.data?.message ||
+            error?.response?.data?.error ||
+            "Failed to create term",
         });
       } finally {
         setSaving(false);
@@ -44,11 +71,12 @@ const TermsPage = () => {
           onSubmit={form.handleSubmit}
           className="grid gap-3 md:grid-cols-3"
         >
-          <Input
+          <Select
             label="Academic Year"
             name="academic_year"
             value={form.values.academic_year}
             onChange={form.handleChange}
+            options={academicYearOptions}
             error={form.errors.academic_year}
           />
           <Select

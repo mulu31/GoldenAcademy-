@@ -1,69 +1,74 @@
-import { body, param } from 'express-validator';
+import { body, param } from "express-validator";
 
 export const createClass = [
-  body('className')
+  body("className")
     .trim()
     .notEmpty()
-    .withMessage('Class name is required')
+    .withMessage("Class name is required")
     .isLength({ min: 1, max: 100 })
-    .withMessage('Class name must be between 1 and 100 characters'),
-  body('grade')
+    .withMessage("Class name must be between 1 and 100 characters"),
+  body("grade")
     .trim()
     .notEmpty()
-    .withMessage('Grade is required')
+    .withMessage("Grade is required")
     .isLength({ min: 1, max: 50 })
-    .withMessage('Grade must be between 1 and 50 characters'),
-  body('termId')
-    .isInt({ min: 1 })
-    .withMessage('Valid term ID is required'),
-  body('homeroomTeacherId')
+    .withMessage("Grade must be between 1 and 50 characters"),
+  body("termId").isInt({ min: 1 }).withMessage("Valid term ID is required"),
+  body("homeroomTeacherId")
     .optional()
     .isInt({ min: 1 })
-    .withMessage('Valid homeroom teacher ID is required')
+    .withMessage("Valid homeroom teacher ID is required"),
 ];
 
 export const updateClass = [
-  param('id')
-    .isInt({ min: 1 })
-    .withMessage('Valid class ID is required'),
-  body('className')
+  param("id").isInt({ min: 1 }).withMessage("Valid class ID is required"),
+  body("className")
     .optional()
     .trim()
     .notEmpty()
-    .withMessage('Class name cannot be empty')
+    .withMessage("Class name cannot be empty")
     .isLength({ min: 1, max: 100 })
-    .withMessage('Class name must be between 1 and 100 characters'),
-  body('grade')
+    .withMessage("Class name must be between 1 and 100 characters"),
+  body("grade")
     .optional()
     .trim()
     .notEmpty()
-    .withMessage('Grade cannot be empty')
+    .withMessage("Grade cannot be empty")
     .isLength({ min: 1, max: 50 })
-    .withMessage('Grade must be between 1 and 50 characters'),
-  body('termId')
+    .withMessage("Grade must be between 1 and 50 characters"),
+  body("termId")
     .optional()
     .isInt({ min: 1 })
-    .withMessage('Valid term ID is required'),
-  body('homeroomTeacherId')
+    .withMessage("Valid term ID is required"),
+  body("homeroomTeacherId")
     .optional()
     .isInt({ min: 1 })
-    .withMessage('Valid homeroom teacher ID is required')
+    .withMessage("Valid homeroom teacher ID is required"),
 ];
 
 export const publishResults = [
-  param('id')
-    .isInt({ min: 1 })
-    .withMessage('Valid class ID is required')
+  param("id").isInt({ min: 1 }).withMessage("Valid class ID is required"),
 ];
 
 export const getClassById = [
-  param('id')
-    .isInt({ min: 1 })
-    .withMessage('Valid class ID is required')
+  param("id").isInt({ min: 1 }).withMessage("Valid class ID is required"),
 ];
 
 export const deleteClass = [
-  param('id')
+  param("id").isInt({ min: 1 }).withMessage("Valid class ID is required"),
+];
+
+export const addClassSubject = [
+  param("id").isInt({ min: 1 }).withMessage("Valid class ID is required"),
+  body("subjectId")
+    .customSanitizer((value, { req }) => value ?? req.body.subject_id)
     .isInt({ min: 1 })
-    .withMessage('Valid class ID is required')
+    .withMessage("Valid subject ID is required"),
+];
+
+export const removeClassSubject = [
+  param("id").isInt({ min: 1 }).withMessage("Valid class ID is required"),
+  param("subjectId")
+    .isInt({ min: 1 })
+    .withMessage("Valid subject ID is required"),
 ];

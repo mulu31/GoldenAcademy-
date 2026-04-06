@@ -20,7 +20,8 @@ export const authenticate = catchAsync(async (req, _res, next) => {
   }
 
   // Query user with roles and teacher information using direct SQL
-  const result = await pool.query(`
+  const result = await pool.query(
+    `
     SELECT 
       u.user_id, u.email, u.is_active,
       COALESCE(
@@ -58,14 +59,16 @@ export const authenticate = catchAsync(async (req, _res, next) => {
     LEFT JOIN departments d ON t.department_id = d.department_id
     WHERE u.user_id = $1
     GROUP BY u.user_id, u.email, u.is_active, t.teacher_id, t.department_id, t.full_name, d.department_id, d.name, d.code
-  `, [decoded.user_id]);
+  `,
+    [decoded.user_id],
+  );
 
   if (result.rows.length === 0) {
     throw new ApiError(401, "Invalid or inactive user");
   }
 
   const row = result.rows[0];
-  
+
   if (!row.is_active) {
     throw new ApiError(401, "Invalid or inactive user");
   }
@@ -75,16 +78,23 @@ export const authenticate = catchAsync(async (req, _res, next) => {
     userId: row.user_id,
     email: row.email,
     isActive: row.is_active,
-    userRoles: row.user_roles.map(ur => ({ role: { name: ur.role.name } })),
-    teacher: row.teacher
+    userRoles: row.user_roles.map((ur) => ({ role: { name: ur.role.name } })),
+    teacher: row.teacher,
   };
+
+  const roles = user.userRoles.map((ur) => ur.role.name).filter(Boolean);
+
+  // Backward-compatible fallback for legacy teacher accounts without explicit role rows.
+  if (roles.length === 0 && user.teacher?.teacherId) {
+    roles.push("TEACHER");
+  }
 
   req.user = {
     userId: user.userId,
     email: user.email,
-    roles: user.userRoles.map(ur => ur.role.name),
+    roles,
     teacher: user.teacher,
-    departmentId: user.teacher?.departmentId
+    departmentId: user.teacher?.departmentId,
   };
 
   next();

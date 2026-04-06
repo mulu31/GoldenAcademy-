@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import reportApi from "../api/reportApi";
-import { extractArray, extractErrorMessage } from "../api/responseAdapter";
+import classApi from "../api/classApi";
+import { extractErrorMessage } from "../api/responseAdapter";
 import PageLayout from "../components/layout/PageLayout";
 import Input from "../components/common/Input";
 import Select from "../components/common/Select";
@@ -12,16 +13,35 @@ import StateView from "../components/common/StateView";
 import { FileDown } from "lucide-react";
 import { exportRowsToPdf } from "../utils/exportPdf";
 import { notify } from "../utils/notifications";
+import { useFetch } from "../hooks/useFetch";
 
 const ReportsPage = () => {
   const [filters, setFilters] = useState({
     class_id: "",
-    academic_year: "",
-    semester: "",
   });
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  const classesQuery = useFetch(() => classApi.getAll(), []);
+
+  const classOptions = useMemo(
+    () =>
+      (classesQuery.data || []).map((classRow) => ({
+        value: classRow.class_id,
+        label:
+          `${classRow.class_name} (${classRow.grade}) - ${classRow.term?.academic_year || classRow.term?.academicYear || ""} ${classRow.term?.semester || ""}`.trim(),
+      })),
+    [classesQuery.data],
+  );
+
+  const selectedClass = useMemo(
+    () =>
+      (classesQuery.data || []).find(
+        (classRow) => String(classRow.class_id) === String(filters.class_id),
+      ),
+    [classesQuery.data, filters.class_id],
+  );
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -29,19 +49,44 @@ const ReportsPage = () => {
   };
 
   const fetchReport = async () => {
+    if (!filters.class_id) {
+      const message = "Please select a class to generate report.";
+      setError(message);
+      notify({ type: "warning", message });
+      return;
+    }
+
     setLoading(true);
     setError("");
     try {
-      const params = {
-        ...(filters.class_id ? { class_id: Number(filters.class_id) } : {}),
-        ...(filters.academic_year
-          ? { academic_year: filters.academic_year }
-          : {}),
-        ...(filters.semester ? { semester: filters.semester } : {}),
-      };
+      const response = await reportApi.getAcademicReport({
+        classId: Number(filters.class_id),
+      });
+      const reportData = response?.data?.data || response?.data || [];
+      const reportRows = (Array.isArray(reportData) ? reportData : []).map(
+        (item) => ({
+          student_school_id:
+            item.studentSchoolId || item.student_school_id || "-",
+          full_name: item.fullName || item.full_name || "-",
+          class_name:
+            item.className ||
+            item.class_name ||
+            selectedClass?.class_name ||
+            "-",
+          academic_year:
+            item.academicYear ||
+            item.academic_year ||
+            selectedClass?.term?.academic_year ||
+            selectedClass?.term?.academicYear ||
+            "-",
+          semester: item.semester || selectedClass?.term?.semester || "-",
+          total_marks: item.totalMarks || item.total_marks || 0,
+          average_score: item.averageScore || item.average_score || 0,
+          rank: item.rank ?? "-",
+          status: item.status || "INCOMPLETE",
+        }),
+      );
 
-      const response = await reportApi.getAcademicReport(params);
-      const reportRows = extractArray(response);
       setRows(reportRows);
       notify({ type: "success", message: "Report generated successfully." });
     } catch (err) {
@@ -98,28 +143,30 @@ const ReportsPage = () => {
       <div className="card">
         <h3 className="mb-3 text-sm font-semibold">Filter Report</h3>
         <div className="grid gap-3 md:grid-cols-4">
-          <Input
-            label="Class ID"
+          <Select
+            label="Class"
             name="class_id"
-            type="number"
             value={filters.class_id}
             onChange={handleChange}
+            options={classOptions}
           />
           <Input
             label="Academic Year"
             name="academic_year"
-            value={filters.academic_year}
-            onChange={handleChange}
+            value={
+              selectedClass?.term?.academic_year ||
+              selectedClass?.term?.academicYear ||
+              ""
+            }
+            onChange={() => {}}
+            readOnly
           />
-          <Select
+          <Input
             label="Semester"
             name="semester"
-            value={filters.semester}
-            onChange={handleChange}
-            options={[
-              { value: "I", label: "I" },
-              { value: "II", label: "II" },
-            ]}
+            value={selectedClass?.term?.semester || ""}
+            onChange={() => {}}
+            readOnly
           />
           <div className="flex items-end">
             <Button

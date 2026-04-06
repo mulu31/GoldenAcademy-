@@ -4,13 +4,164 @@ import { handleDatabaseError } from "../utils/dbErrorHandler.js";
 
 export const reportsService = {
   /**
+   * Get academic report rows with optional filters.
+   * Supports class, academic year, and semester filters.
+   */
+  getAcademicReport: async (filters = {}, requestingUser = null) => {
+    const { classId, academicYear, semester } = filters;
+
+    const conditions = [];
+    const params = [];
+    let paramCount = 1;
+
+    if (classId) {
+      const parsedClassId = parseInt(classId);
+      if (Number.isNaN(parsedClassId) || parsedClassId < 1) {
+        throw new ApiError(400, "Valid class ID is required");
+      }
+      conditions.push(`c.class_id = $${paramCount++}`);
+      params.push(parsedClassId);
+    }
+
+    if (academicYear) {
+      conditions.push(`t.academic_year = $${paramCount++}`);
+      params.push(academicYear);
+    }
+
+    if (semester) {
+      conditions.push(`t.semester = $${paramCount++}`);
+      params.push(semester);
+    }
+
+    const isTeacherOnlyRequest =
+      requestingUser?.roles?.includes("TEACHER") &&
+      !requestingUser?.roles?.includes("SYSTEM_ADMIN") &&
+      !requestingUser?.roles?.includes("DEPARTMENT_ADMIN") &&
+      !requestingUser?.roles?.includes("REGISTRAR");
+
+    if (isTeacherOnlyRequest) {
+      const teacherId = requestingUser?.teacher?.teacherId;
+      if (!teacherId) {
+        throw new ApiError(403, "Teacher profile required for report access");
+      }
+
+      conditions.push(
+        `EXISTS (
+          SELECT 1
+          FROM class_subjects csf
+          JOIN teacher_class_subject tcsf ON tcsf.class_subject_id = csf.class_subject_id
+          WHERE csf.class_id = c.class_id
+            AND tcsf.teacher_id = $${paramCount++}
+        )`,
+      );
+      params.push(parseInt(teacherId, 10));
+    }
+
+    const whereClause = conditions.length
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
+
+    const result = await pool.query(
+      `
+      WITH class_subject_counts AS (
+        SELECT class_id, COUNT(*)::int AS total_subjects
+        FROM class_subjects
+        GROUP BY class_id
+      ),
+      summary AS (
+        SELECT
+          se.enrollment_id,
+          st.student_id,
+          st.student_school_id,
+          st.full_name,
+          c.class_id,
+          c.class_name,
+          c.grade,
+          t.academic_year,
+          t.semester,
+          COALESCE(csc.total_subjects, 0) AS total_subjects,
+          COUNT(m.mark_id)::int AS marks_count,
+          COALESCE(SUM(m.mark_obtained), 0)::int AS total_marks,
+          AVG(m.mark_obtained)::numeric AS average_score
+        FROM student_enrollments se
+        JOIN students st ON se.student_id = st.student_id
+        JOIN classes c ON se.class_id = c.class_id
+        JOIN terms t ON c.term_id = t.term_id
+        LEFT JOIN class_subject_counts csc ON c.class_id = csc.class_id
+        LEFT JOIN marks m ON se.enrollment_id = m.enrollment_id
+        ${whereClause}
+        GROUP BY
+          se.enrollment_id,
+          st.student_id,
+          st.student_school_id,
+          st.full_name,
+          c.class_id,
+          c.class_name,
+          c.grade,
+          t.academic_year,
+          t.semester,
+          csc.total_subjects
+      )
+      SELECT
+        enrollment_id,
+        student_id,
+        student_school_id,
+        full_name,
+        class_id,
+        class_name,
+        grade,
+        academic_year,
+        semester,
+        total_marks,
+        CASE
+          WHEN average_score IS NULL THEN 0
+          ELSE ROUND(average_score::numeric, 2)
+        END AS average_score,
+        CASE
+          WHEN total_subjects = 0 OR marks_count < total_subjects THEN 'INCOMPLETE'
+          WHEN average_score >= 50 THEN 'PASS'
+          ELSE 'FAIL'
+        END AS status,
+        CASE
+          WHEN total_subjects > 0 AND marks_count = total_subjects
+          THEN RANK() OVER (
+            PARTITION BY class_id, academic_year, semester
+            ORDER BY average_score DESC NULLS LAST
+          )
+          ELSE NULL
+        END AS rank
+      FROM summary
+      ORDER BY academic_year DESC, semester DESC, class_name ASC, full_name ASC
+    `,
+      params,
+    );
+
+    return result.rows.map((row) => ({
+      enrollmentId: row.enrollment_id,
+      studentId: row.student_id,
+      studentSchoolId: row.student_school_id,
+      fullName: row.full_name,
+      classId: row.class_id,
+      className: row.class_name,
+      grade: row.grade,
+      academicYear: row.academic_year,
+      semester: row.semester,
+      totalMarks: row.total_marks,
+      averageScore: Number(row.average_score),
+      rank: row.rank,
+      status: row.status,
+    }));
+  },
+
+  /**
    * Get class report with student rankings, averages, and mark completion.
    * Only accessible by homeroom teacher of the class (enforced in route).
    * Requirements: 5.1, 5.2, 5.3, 5.4, 12.1, 12.3, 12.4, 12.5
    */
   getClassReport: async (classId, requestingUser) => {
     // Fetch class data with term and homeroom teacher
-    const classResult = await pool.query(`
+    const classResult = await pool.query(
+      `
       SELECT 
         c.class_id, c.class_name, c.grade, c.results_published,
         json_build_object(
@@ -26,7 +177,9 @@ export const reportsService = {
       LEFT JOIN terms t ON c.term_id = t.term_id
       LEFT JOIN teachers ht ON c.homeroom_teacher_id = ht.teacher_id
       WHERE c.class_id = $1
-    `, [parseInt(classId)]);
+    `,
+      [parseInt(classId)],
+    );
 
     if (classResult.rows.length === 0) {
       throw new ApiError(404, "Class not found");
@@ -35,7 +188,8 @@ export const reportsService = {
     const classData = classResult.rows[0];
 
     // Fetch class subjects with teachers
-    const subjectsResult = await pool.query(`
+    const subjectsResult = await pool.query(
+      `
       SELECT 
         cs.class_subject_id,
         s.subject_id, s.name as subject_name, s.code as subject_code,
@@ -55,13 +209,16 @@ export const reportsService = {
       WHERE cs.class_id = $1
       GROUP BY cs.class_subject_id, s.subject_id, s.name, s.code
       ORDER BY s.name
-    `, [parseInt(classId)]);
+    `,
+      [parseInt(classId)],
+    );
 
     const classSubjects = subjectsResult.rows;
     const totalSubjects = classSubjects.length;
 
     // Fetch student enrollments with marks using window function for ranking
-    const studentsResult = await pool.query(`
+    const studentsResult = await pool.query(
+      `
       SELECT 
         se.enrollment_id,
         json_build_object(
@@ -90,10 +247,13 @@ export const reportsService = {
       WHERE se.class_id = $1
       GROUP BY se.enrollment_id, st.student_id, st.student_school_id, st.full_name, st.gender
       ORDER BY st.full_name
-    `, [parseInt(classId)]);
+    `,
+      [parseInt(classId)],
+    );
 
     // Calculate rankings using SQL window function for complete students
-    const rankingResult = await pool.query(`
+    const rankingResult = await pool.query(
+      `
       SELECT 
         se.enrollment_id,
         RANK() OVER (ORDER BY SUM(m.mark_obtained) DESC) as rank
@@ -102,10 +262,12 @@ export const reportsService = {
       WHERE se.class_id = $1
       GROUP BY se.enrollment_id
       HAVING COUNT(DISTINCT m.subject_id) = $2
-    `, [parseInt(classId), totalSubjects]);
+    `,
+      [parseInt(classId), totalSubjects],
+    );
 
     const rankMap = {};
-    rankingResult.rows.forEach(row => {
+    rankingResult.rows.forEach((row) => {
       rankMap[row.enrollment_id] = row.rank;
     });
 
@@ -113,7 +275,7 @@ export const reportsService = {
     const studentResults = studentsResult.rows.map((row) => {
       const marksCount = parseInt(row.marks_count);
       const isComplete = marksCount === totalSubjects && totalSubjects > 0;
-      
+
       let average = null;
       let status = "INCOMPLETE";
 
@@ -129,12 +291,13 @@ export const reportsService = {
         average,
         status,
         isComplete,
-        rank: rankMap[row.enrollment_id] ?? null
+        rank: rankMap[row.enrollment_id] ?? null,
       };
     });
 
     // Calculate subject completion status
-    const subjectCompletionResult = await pool.query(`
+    const subjectCompletionResult = await pool.query(
+      `
       SELECT 
         cs.subject_id,
         COUNT(DISTINCT se.enrollment_id) as total_students,
@@ -144,18 +307,23 @@ export const reportsService = {
       LEFT JOIN marks m ON se.enrollment_id = m.enrollment_id AND cs.subject_id = m.subject_id
       WHERE cs.class_id = $1 AND se.class_id = $1
       GROUP BY cs.subject_id
-    `, [parseInt(classId)]);
+    `,
+      [parseInt(classId)],
+    );
 
     const completionMap = {};
-    subjectCompletionResult.rows.forEach(row => {
+    subjectCompletionResult.rows.forEach((row) => {
       completionMap[row.subject_id] = {
         totalStudents: parseInt(row.total_students),
-        submittedCount: parseInt(row.submitted_count)
+        submittedCount: parseInt(row.submitted_count),
       };
     });
 
     const subjectCompletionStatus = classSubjects.map((cs) => {
-      const completion = completionMap[cs.subject_id] || { totalStudents: 0, submittedCount: 0 };
+      const completion = completionMap[cs.subject_id] || {
+        totalStudents: 0,
+        submittedCount: 0,
+      };
       return {
         subjectId: cs.subject_id,
         subjectName: cs.subject_name,
@@ -163,7 +331,7 @@ export const reportsService = {
         teachers: cs.teachers,
         submittedCount: completion.submittedCount,
         totalStudents: completion.totalStudents,
-        isComplete: completion.submittedCount === completion.totalStudents
+        isComplete: completion.submittedCount === completion.totalStudents,
       };
     });
 
@@ -178,7 +346,9 @@ export const reportsService = {
       resultsPublished: classData.results_published,
       allMarksComplete,
       subjectCompletionStatus,
-      students: studentResults.sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity))
+      students: studentResults.sort(
+        (a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity),
+      ),
     };
   },
 
@@ -188,12 +358,15 @@ export const reportsService = {
    */
   getDepartmentReport: async (departmentId) => {
     // Fetch department with subjects and teachers
-    const departmentResult = await pool.query(`
+    const departmentResult = await pool.query(
+      `
       SELECT 
         d.department_id, d.name, d.code
       FROM departments d
       WHERE d.department_id = $1
-    `, [parseInt(departmentId)]);
+    `,
+      [parseInt(departmentId)],
+    );
 
     if (departmentResult.rows.length === 0) {
       throw new ApiError(404, "Department not found");
@@ -202,26 +375,33 @@ export const reportsService = {
     const department = departmentResult.rows[0];
 
     // Fetch subjects for this department
-    const subjectsResult = await pool.query(`
+    const subjectsResult = await pool.query(
+      `
       SELECT subject_id, name, code
       FROM subjects
       WHERE department_id = $1
       ORDER BY name
-    `, [parseInt(departmentId)]);
+    `,
+      [parseInt(departmentId)],
+    );
 
     const subjects = subjectsResult.rows;
 
     // Fetch teachers count for this department
-    const teachersResult = await pool.query(`
+    const teachersResult = await pool.query(
+      `
       SELECT COUNT(*) as teacher_count
       FROM teachers
       WHERE department_id = $1
-    `, [parseInt(departmentId)]);
+    `,
+      [parseInt(departmentId)],
+    );
 
     const teacherCount = parseInt(teachersResult.rows[0].teacher_count);
 
     // Fetch marks aggregated by subject
-    const marksResult = await pool.query(`
+    const marksResult = await pool.query(
+      `
       SELECT 
         s.subject_id,
         s.name as subject_name,
@@ -234,15 +414,19 @@ export const reportsService = {
       WHERE s.department_id = $1
       GROUP BY s.subject_id, s.name
       ORDER BY s.name
-    `, [parseInt(departmentId)]);
+    `,
+      [parseInt(departmentId)],
+    );
 
-    const subjectSummaries = marksResult.rows.map(row => ({
+    const subjectSummaries = marksResult.rows.map((row) => ({
       subjectId: row.subject_id,
       subjectName: row.subject_name,
       totalMarksSubmitted: parseInt(row.total_marks_submitted),
-      averageMark: row.average_mark ? parseFloat(parseFloat(row.average_mark).toFixed(2)) : null,
+      averageMark: row.average_mark
+        ? parseFloat(parseFloat(row.average_mark).toFixed(2))
+        : null,
       passCount: parseInt(row.pass_count),
-      failCount: parseInt(row.fail_count)
+      failCount: parseInt(row.fail_count),
     }));
 
     return {
@@ -251,7 +435,7 @@ export const reportsService = {
       departmentCode: department.code,
       totalSubjects: subjects.length,
       totalTeachers: teacherCount,
-      subjectSummaries
+      subjectSummaries,
     };
   },
 
@@ -261,11 +445,14 @@ export const reportsService = {
    */
   getMarkCompletionStatus: async (classId) => {
     // Fetch class data
-    const classResult = await pool.query(`
+    const classResult = await pool.query(
+      `
       SELECT class_id, class_name
       FROM classes
       WHERE class_id = $1
-    `, [parseInt(classId)]);
+    `,
+      [parseInt(classId)],
+    );
 
     if (classResult.rows.length === 0) {
       throw new ApiError(404, "Class not found");
@@ -274,16 +461,20 @@ export const reportsService = {
     const classData = classResult.rows[0];
 
     // Fetch total students count
-    const studentsResult = await pool.query(`
+    const studentsResult = await pool.query(
+      `
       SELECT COUNT(*) as total_students
       FROM student_enrollments
       WHERE class_id = $1
-    `, [parseInt(classId)]);
+    `,
+      [parseInt(classId)],
+    );
 
     const totalStudents = parseInt(studentsResult.rows[0].total_students);
 
     // Fetch class subjects with teachers and mark completion status
-    const subjectsResult = await pool.query(`
+    const subjectsResult = await pool.query(
+      `
       SELECT 
         cs.subject_id,
         s.name as subject_name,
@@ -309,9 +500,11 @@ export const reportsService = {
       WHERE cs.class_id = $1
       GROUP BY cs.subject_id, s.name, s.code
       ORDER BY s.name
-    `, [parseInt(classId)]);
+    `,
+      [parseInt(classId)],
+    );
 
-    const subjectStatus = subjectsResult.rows.map(row => {
+    const subjectStatus = subjectsResult.rows.map((row) => {
       const submittedCount = parseInt(row.submitted_count);
       const isComplete = submittedCount === totalStudents;
       const pendingCount = totalStudents - submittedCount;
@@ -324,7 +517,7 @@ export const reportsService = {
         submittedCount,
         totalStudents,
         isComplete,
-        pendingCount
+        pendingCount,
       };
     });
 
@@ -337,7 +530,7 @@ export const reportsService = {
       totalSubjects: subjectStatus.length,
       allMarksComplete: allComplete,
       pendingSubjects,
-      subjectStatus
+      subjectStatus,
     };
-  }
+  },
 };

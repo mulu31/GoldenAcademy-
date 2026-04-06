@@ -1,6 +1,7 @@
 import { catchAsync } from "../utils/catchAsync.js";
 import { sendResponse } from "../utils/response.js";
 import { usersService } from "../services/users.service.js";
+import { ApiError } from "../utils/ApiError.js";
 
 export const usersController = {
   list: catchAsync(async (_req, res) => {
@@ -34,12 +35,22 @@ export const usersController = {
   }),
 
   assignRole: catchAsync(async (req, res) => {
-    const data = await usersService.assignRole(req.params.id, req.body.roleId);
+    if (parseInt(req.params.id, 10) === req.user.userId) {
+      throw new ApiError(403, "You cannot change your own role");
+    }
+
+    const roleId = req.body.roleId ?? req.body.role_id;
+    const data = await usersService.assignRole(req.params.id, roleId);
     return sendResponse(res, 200, "Role assigned successfully", data);
   }),
 
   removeRole: catchAsync(async (req, res) => {
-    const data = await usersService.removeRole(req.params.id, req.body.roleId);
+    if (parseInt(req.params.id, 10) === req.user.userId) {
+      throw new ApiError(403, "You cannot change your own role");
+    }
+
+    const roleId = req.body.roleId ?? req.body.role_id;
+    const data = await usersService.removeRole(req.params.id, roleId);
     return sendResponse(res, 200, "Role removed successfully", data);
-  })
+  }),
 };

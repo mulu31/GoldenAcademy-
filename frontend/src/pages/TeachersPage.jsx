@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import teacherApi from "../api/teacherApi";
-import userApi from "../api/userApi";
 import departmentApi from "../api/departmentApi";
 import PageLayout from "../components/layout/PageLayout";
 import Input from "../components/common/Input";
@@ -9,23 +8,23 @@ import Button from "../components/common/Button";
 import Table from "../components/common/Table";
 import TableSection from "../components/common/TableSection";
 import { useFetch } from "../hooks/useFetch";
+import { useAuth } from "../hooks/useAuth";
 import { useForm } from "../hooks/useForm";
 import { validateForm } from "../utils/validateForm";
+import { extractErrorMessage } from "../api/responseAdapter";
 import { notify } from "../utils/notifications";
 
+const createTeacherRoleOptions = [
+  { value: "TEACHER", label: "Teacher" },
+  { value: "DEPARTMENT_ADMIN", label: "Department Admin" },
+  { value: "REGISTRAR", label: "Registrar" },
+];
+
 const TeachersPage = () => {
+  const { user } = useAuth();
   const [saving, setSaving] = useState(false);
   const teacherQuery = useFetch(() => teacherApi.getAll(), []);
-  const userQuery = useFetch(() => userApi.getAll(), []);
   const departmentQuery = useFetch(() => departmentApi.getAll(), []);
-
-  const userLookup = useMemo(
-    () =>
-      Object.fromEntries(
-        (userQuery.data || []).map((user) => [user.user_id, user.email]),
-      ),
-    [userQuery.data],
-  );
 
   const departmentLookup = useMemo(
     () =>
@@ -38,26 +37,50 @@ const TeachersPage = () => {
     [departmentQuery.data],
   );
 
+  const roleOptions = useMemo(() => {
+    const roles = user?.roles || [];
+    const isDeptAdminOnly =
+      roles.includes("DEPARTMENT_ADMIN") &&
+      !roles.includes("SYSTEM_ADMIN") &&
+      !roles.includes("REGISTRAR");
+
+    if (isDeptAdminOnly) {
+      return createTeacherRoleOptions.filter(
+        (role) => role.value === "TEACHER",
+      );
+    }
+
+    return createTeacherRoleOptions;
+  }, [user?.roles]);
+
   const form = useForm({
-    initialValues: { full_name: "", user_id: "", department_id: "" },
+    initialValues: {
+      full_name: "",
+      email: "",
+      password: "",
+      role_name: "TEACHER",
+      department_id: "",
+    },
     validate: (values) => validateForm("teacher", values),
     onSubmit: async (values) => {
       setSaving(true);
       try {
         await teacherApi.create({
-          ...values,
-          user_id: values.user_id ? Number(values.user_id) : null,
-          department_id: values.department_id
+          fullName: values.full_name,
+          email: values.email,
+          password: values.password,
+          roleName: values.role_name,
+          departmentId: values.department_id
             ? Number(values.department_id)
             : null,
         });
-        notify({ type: "success", message: "Teacher created" });
+        notify({ type: "success", message: "Teacher account created" });
         form.reset();
         await teacherQuery.refetch();
       } catch (error) {
         notify({
           type: "error",
-          message: error?.response?.data?.message || "Failed to create teacher",
+          message: extractErrorMessage(error, "Failed to create teacher"),
         });
       } finally {
         setSaving(false);
@@ -71,7 +94,7 @@ const TeachersPage = () => {
         <h3 className="mb-3 text-sm font-semibold">Create Teacher</h3>
         <form
           onSubmit={form.handleSubmit}
-          className="grid gap-3 md:grid-cols-4"
+          className="grid gap-3 md:grid-cols-6"
         >
           <Input
             label="Full Name"
@@ -80,27 +103,42 @@ const TeachersPage = () => {
             onChange={form.handleChange}
             error={form.errors.full_name}
           />
-          <Select
-            label="User"
-            name="user_id"
-            value={form.values.user_id}
+          <Input
+            label="Email"
+            name="email"
+            type="email"
+            value={form.values.email}
             onChange={form.handleChange}
-            options={userQuery.data.map((u) => ({
-              value: u.user_id,
-              label: u.email,
-            }))}
+            error={form.errors.email}
+          />
+          <Input
+            label="Password"
+            name="password"
+            type="password"
+            value={form.values.password}
+            onChange={form.handleChange}
+            error={form.errors.password}
+          />
+          <Select
+            label="Role"
+            name="role_name"
+            value={form.values.role_name}
+            onChange={form.handleChange}
+            options={roleOptions}
+            error={form.errors.role_name}
           />
           <Select
             label="Department"
             name="department_id"
             value={form.values.department_id}
             onChange={form.handleChange}
-            options={departmentQuery.data.map((d) => ({
+            options={(departmentQuery.data || []).map((d) => ({
               value: d.department_id,
               label: d.name,
             }))}
+            error={form.errors.department_id}
           />
-          <div className="flex items-end">
+          <div className="flex items-end md:col-span-1">
             <Button type="submit" loading={saving}>
               Save Teacher
             </Button>
@@ -119,12 +157,14 @@ const TeachersPage = () => {
             {
               key: "user_id",
               title: "User",
-              render: (row) => userLookup[row.user_id] || row.user_id || "-",
+              render: (row) =>
+                row.user?.email || row.user_email || row.user_id || "-",
             },
             {
               key: "department_id",
               title: "Department",
               render: (row) =>
+                row.department?.name ||
                 row.department_name ||
                 departmentLookup[row.department_id] ||
                 row.department_id ||

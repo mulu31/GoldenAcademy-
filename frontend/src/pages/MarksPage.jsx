@@ -3,6 +3,7 @@ import marksApi from "../api/marksApi";
 import subjectApi from "../api/subjectApi";
 import teacherApi from "../api/teacherApi";
 import studentApi from "../api/studentApi";
+import { extractErrorMessage } from "../api/responseAdapter";
 import PageLayout from "../components/layout/PageLayout";
 import MarksForm from "../components/students/MarksForm";
 import Table from "../components/common/Table";
@@ -16,7 +17,12 @@ const MarksPage = () => {
   const marksQuery = useFetch(() => marksApi.getAll(), []);
   const subjectsQuery = useFetch(() => subjectApi.getAll(), []);
   const teachersQuery = useFetch(() => teacherApi.getAll(), []);
-  const enrollmentsQuery = useFetch(() => studentApi.getEnrollments(), []);
+  const enrollmentsQuery = useFetch(
+    () => studentApi.getEnrollments({ page: 1, limit: 200 }),
+    [],
+    true,
+    { mode: "payload", initialData: { enrollments: [] } },
+  );
 
   const subjectLookup = useMemo(
     () =>
@@ -44,17 +50,18 @@ const MarksPage = () => {
     setSaving(true);
     try {
       await marksApi.submitMark({
-        teacher_id: Number(values.teacher_id),
-        enrollment_id: Number(values.enrollment_id),
-        subject_id: Number(values.subject_id),
-        mark_obtained: Number(values.mark_obtained),
+        studentId: Number(values.student_id),
+        teacherId: Number(values.teacher_id),
+        enrollmentId: Number(values.enrollment_id),
+        subjectId: Number(values.subject_id),
+        markObtained: Number(values.mark_obtained),
       });
       notify({ type: "success", message: "Mark submitted" });
       await marksQuery.refetch();
     } catch (error) {
       notify({
         type: "error",
-        message: error?.response?.data?.message || "Failed to submit mark",
+        message: extractErrorMessage(error, "Failed to submit mark"),
       });
     } finally {
       setSaving(false);
@@ -66,7 +73,7 @@ const MarksPage = () => {
       <div className="card">
         <h3 className="mb-3 text-sm font-semibold">Submit or Validate Marks</h3>
         <MarksForm
-          enrollments={enrollmentsQuery.data}
+          enrollments={enrollmentsQuery.data?.enrollments || []}
           subjects={subjectsQuery.data}
           teachers={teachersQuery.data}
           onSubmit={submitMark}
@@ -79,6 +86,7 @@ const MarksPage = () => {
           rows={marksQuery.data}
           loading={marksQuery.loading}
           error={marksQuery.error}
+          searchPlaceholder="Search by student, subject, teacher, class, or mark"
           columns={[
             { key: "mark_id", title: "ID" },
             { key: "enrollment_id", title: "Enrollment" },
