@@ -2,9 +2,10 @@ import { body, param, query } from "express-validator";
 
 export const createStudent = [
   body("studentSchoolId")
+    .optional()
     .trim()
     .notEmpty()
-    .withMessage("Student school ID is required")
+    .withMessage("Student school ID cannot be empty")
     .isLength({ min: 1, max: 50 })
     .withMessage("Student school ID must be between 1 and 50 characters"),
   body("fullName")

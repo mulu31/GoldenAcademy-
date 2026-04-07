@@ -1,14 +1,15 @@
 import { useMemo, useState, useCallback, useEffect } from "react";
 import marksApi from "../../api/marksApi";
 import reportApi from "../../api/reportApi";
+import classApi from "../../api/classApi";
 import teacherApi from "../../api/teacherApi";
 import studentApi from "../../api/studentApi";
 import Table from "../common/Table";
 import TableSection from "../common/TableSection";
 import StateView from "../common/StateView";
-import Input from "../common/Input";
 import Select from "../common/Select";
 import Button from "../common/Button";
+import Modal from "../common/Modal";
 import { useAuth } from "../../hooks/useAuth";
 import { useFetch } from "../../hooks/useFetch";
 import { extractErrorMessage, extractPayload } from "../../api/responseAdapter";
@@ -23,9 +24,97 @@ const toNumber = (value) => {
 const resolveTeacherId = (teacher) =>
   teacher?.teacherId ?? teacher?.teacher_id ?? null;
 
+const resolveUserId = (user) => user?.userId ?? user?.user_id ?? null;
+
+const normalizeRoleName = (value) => {
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    return value.toUpperCase();
+  }
+
+  if (typeof value === "object") {
+    const candidate = value.name ?? value.role?.name ?? value.roleName;
+    return candidate ? String(candidate).toUpperCase() : null;
+  }
+
+  return null;
+};
+
+const resolveRoles = (user) => {
+  const directRoles = Array.isArray(user?.roles) ? user.roles : [];
+
+  if (directRoles.length) {
+    const normalized = directRoles.map(normalizeRoleName).filter(Boolean);
+    if (normalized.length) return normalized;
+  }
+
+  const nestedRoles = Array.isArray(user?.userRoles)
+    ? user.userRoles
+        .map((entry) =>
+          normalizeRoleName(entry?.role?.name ?? entry?.name ?? entry),
+        )
+        .filter(Boolean)
+    : [];
+
+  if (nestedRoles.length) return nestedRoles;
+
+  if (user?.teacher || user?.teacherId || user?.teacher_id) {
+    return ["TEACHER"];
+  }
+
+  return [];
+};
+
+const toPayloadArray = (response, candidateKeys = []) => {
+  const payload = extractPayload(response);
+  if (Array.isArray(payload)) return payload;
+
+  for (const key of candidateKeys) {
+    if (Array.isArray(payload?.[key])) return payload[key];
+  }
+
+  return [];
+};
+
 const TeacherDashboard = () => {
   const { user } = useAuth();
-  const teacherId = resolveTeacherId(user?.teacher);
+  const teacherId =
+    resolveTeacherId(user?.teacher) ??
+    user?.teacherId ??
+    user?.teacher_id ??
+    null;
+  const userId = resolveUserId(user);
+  const userRoles = resolveRoles(user);
+  const isTeacherRole = userRoles.includes("TEACHER");
+
+  const teacherDirectoryQuery = useFetch(
+    async () => {
+      if (!userId && !user?.email) return [];
+      const response = await teacherApi.getAll();
+      return toPayloadArray(response, ["teachers"]);
+    },
+    [userId, user?.email],
+    Boolean((userId || user?.email) && !teacherId),
+  );
+
+  const resolvedTeacherId = useMemo(() => {
+    if (teacherId) return teacherId;
+
+    const linkedTeacher = (teacherDirectoryQuery.data || []).find((row) => {
+      const rowUserId = row.userId ?? row.user_id ?? row.user?.userId;
+
+      if (rowUserId && userId && Number(rowUserId) === Number(userId)) {
+        return true;
+      }
+
+      const rowEmail = String(row.user?.email || "").toLowerCase();
+      const currentEmail = String(user?.email || "").toLowerCase();
+      return Boolean(rowEmail && currentEmail && rowEmail === currentEmail);
+    });
+
+    return linkedTeacher?.teacherId ?? linkedTeacher?.teacher_id ?? null;
+  }, [teacherId, teacherDirectoryQuery.data, userId, user?.email]);
 
   const [markFormData, setMarkFormData] = useState({
     academicYear: "",
@@ -43,13 +132,31 @@ const TeacherDashboard = () => {
   const [draftMarks, setDraftMarks] = useState({});
   const [classRoster, setClassRoster] = useState([]);
   const [loadingRoster, setLoadingRoster] = useState(false);
+  const [publishingClassId, setPublishingClassId] = useState(null);
+  const [studentDetailOpen, setStudentDetailOpen] = useState(false);
+  const [studentDetailLoading, setStudentDetailLoading] = useState(false);
+  const [studentDetailError, setStudentDetailError] = useState("");
+  const [studentDetail, setStudentDetail] = useState(null);
+  const [studentHistory, setStudentHistory] = useState(null);
 
   const homeroomClassQuery = useFetch(
-    () =>
-      teacherId
-        ? teacherApi.getHomeroomClass(teacherId)
-        : Promise.resolve(null),
-    [teacherId],
+    async () => {
+      if (isTeacherRole) {
+        try {
+          return await teacherApi.getMyHomeroomClass();
+        } catch (_error) {
+          if (resolvedTeacherId) {
+            return teacherApi.getHomeroomClass(resolvedTeacherId);
+          }
+          throw _error;
+        }
+      }
+
+      return resolvedTeacherId
+        ? teacherApi.getHomeroomClass(resolvedTeacherId)
+        : Promise.resolve(null);
+    },
+    [isTeacherRole, resolvedTeacherId],
     true,
     { mode: "payload", initialData: null },
   );
@@ -64,28 +171,68 @@ const TeacherDashboard = () => {
     : "Not assigned";
 
   // Fetch teacher assignments when teacher is identified
-  const assignmentsQuery = useFetch(
-    () =>
-      teacherId ? teacherApi.getAssignments(teacherId) : Promise.resolve([]),
-    [teacherId],
-  );
+  const assignmentsQuery = useFetch(async () => {
+    if (isTeacherRole) {
+      try {
+        const response = await teacherApi.getMyAssignments();
+        return toPayloadArray(response, ["assignments"]);
+      } catch (_error) {
+        if (resolvedTeacherId) {
+          const fallbackResponse =
+            await teacherApi.getAssignments(resolvedTeacherId);
+          return toPayloadArray(fallbackResponse, ["assignments"]);
+        }
+        throw _error;
+      }
+    }
+
+    if (!resolvedTeacherId) return [];
+
+    const response = await teacherApi.getAssignments(resolvedTeacherId);
+    return toPayloadArray(response, ["assignments"]);
+  }, [isTeacherRole, resolvedTeacherId]);
 
   // Fetch marks for this teacher
-  const teacherMarksQuery = useFetch(
-    () => (teacherId ? marksApi.getByTeacher(teacherId) : Promise.resolve([])),
-    [teacherId],
-  );
+  const teacherMarksQuery = useFetch(async () => {
+    if (isTeacherRole) {
+      try {
+        const response = await marksApi.getMine();
+        return toPayloadArray(response, ["marks"]);
+      } catch (_error) {
+        if (resolvedTeacherId) {
+          const fallbackResponse =
+            await marksApi.getByTeacher(resolvedTeacherId);
+          return toPayloadArray(fallbackResponse, ["marks"]);
+        }
+        throw _error;
+      }
+    }
 
-  const academicReportQuery = useFetch(
-    () => (teacherId ? reportApi.getAcademicReport() : Promise.resolve([])),
-    [teacherId],
-  );
+    if (!resolvedTeacherId) return [];
+
+    const response = await marksApi.getByTeacher(resolvedTeacherId);
+    return toPayloadArray(response, ["marks"]);
+  }, [isTeacherRole, resolvedTeacherId]);
+
+  // Fetch all marks for selected class to reflect real gradebook state
+  const classMarksQuery = useFetch(async () => {
+    if (!markFormData.classId) return [];
+    const response = await marksApi.getByClass(markFormData.classId);
+    return toPayloadArray(response, ["marks"]);
+  }, [markFormData.classId]);
+
+  const academicReportQuery = useFetch(async () => {
+    if (!(isTeacherRole || resolvedTeacherId)) return [];
+
+    const response = await reportApi.getAcademicReport();
+    return toPayloadArray(response, ["rows", "report", "academic"]);
+  }, [isTeacherRole, resolvedTeacherId]);
 
   const scopedMarks = teacherMarksQuery.data || [];
 
-  const assignmentRows = useMemo(
-    () =>
-      (assignmentsQuery.data || []).map((assignment) => {
+  const assignmentRows = useMemo(() => {
+    const mappedAssignments = (assignmentsQuery.data || []).map(
+      (assignment) => {
         const classData = assignment.classSubject?.class || {};
         const subjectData = assignment.classSubject?.subject || {};
         const termData = classData.term || {};
@@ -111,9 +258,49 @@ const TeacherDashboard = () => {
           semester,
           termKey: `${academicYear}::${semester}`,
         };
-      }),
-    [assignmentsQuery.data, homeroomClassId],
-  );
+      },
+    );
+
+    const keySet = new Set(
+      mappedAssignments.map(
+        (row) => `${String(row.classId)}::${String(row.subjectId)}`,
+      ),
+    );
+
+    const homeroomFallback = (homeroomClass?.classSubjects || [])
+      .map((item) => {
+        const subject = item.subject || {};
+        const subjectId = subject.subjectId ?? subject.subject_id;
+        const classId = homeroomClass?.classId ?? homeroomClass?.class_id;
+        if (!subjectId || !classId) return null;
+
+        const key = `${String(classId)}::${String(subjectId)}`;
+        if (keySet.has(key)) return null;
+
+        const term = homeroomClass?.term || {};
+        const academicYear =
+          term.academicYear || term.academic_year || "Unknown";
+        const semester = term.semester || "Unknown";
+
+        return {
+          teacherClassSubjectId: `HR-${classId}-${subjectId}`,
+          classId,
+          className: homeroomClass?.className,
+          grade: homeroomClass?.grade,
+          resultsPublished: Boolean(homeroomClass?.resultsPublished),
+          isHomeroomClass: true,
+          subjectId,
+          subjectName: subject.name,
+          subjectCode: subject.code,
+          academicYear,
+          semester,
+          termKey: `${academicYear}::${semester}`,
+        };
+      })
+      .filter(Boolean);
+
+    return [...mappedAssignments, ...homeroomFallback];
+  }, [assignmentsQuery.data, homeroomClassId, homeroomClass]);
 
   const marksOverviewRows = useMemo(() => {
     const dedupe = new Map();
@@ -251,7 +438,7 @@ const TeacherDashboard = () => {
     if (!selectedSubjectId) return new Map();
 
     const next = new Map();
-    (scopedMarks || []).forEach((mark) => {
+    (classMarksQuery.data || []).forEach((mark) => {
       const markSubjectId = Number(mark.subjectId || mark.subject_id);
       if (markSubjectId !== selectedSubjectId) return;
 
@@ -261,7 +448,7 @@ const TeacherDashboard = () => {
     });
 
     return next;
-  }, [scopedMarks, selectedSubjectId]);
+  }, [classMarksQuery.data, selectedSubjectId]);
 
   const gradebookRows = useMemo(
     () =>
@@ -523,21 +710,153 @@ const TeacherDashboard = () => {
     await generateClassReport(homeroomClassId);
   }, [generateClassReport, homeroomClassId]);
 
+  useEffect(() => {
+    if (classReport || reportLoading || !homeroomClassId) return;
+
+    generateClassReport(homeroomClassId);
+  }, [classReport, reportLoading, homeroomClassId, generateClassReport]);
+
   const applyAssignmentToHierarchy = (assignment) => {
     setMarkFormData((prev) => ({
       ...prev,
       academicYear: assignment.academicYear,
       termKey: assignment.termKey,
       classId: String(assignment.classId),
-      subjectId: String(assignment.subjectId),
+      subjectId: assignment.subjectId ? String(assignment.subjectId) : "",
     }));
   };
+
+  const handleOpenStudentDetail = useCallback(async (studentMeta) => {
+    const parsedStudentId = Number(studentMeta?.studentId);
+    if (!Number.isInteger(parsedStudentId) || parsedStudentId < 1) {
+      notify({
+        type: "warning",
+        message: "Valid student details are not available for this row.",
+      });
+      return;
+    }
+
+    setStudentDetailOpen(true);
+    setStudentDetailLoading(true);
+    setStudentDetailError("");
+    setStudentDetail(null);
+    setStudentHistory(null);
+
+    try {
+      const [studentResponse, historyResponse] = await Promise.all([
+        studentApi.getById(parsedStudentId),
+        studentApi.getHistory(parsedStudentId),
+      ]);
+
+      const studentPayload = extractPayload(studentResponse);
+      const historyPayload = extractPayload(historyResponse);
+
+      setStudentDetail(
+        studentPayload && typeof studentPayload === "object"
+          ? studentPayload
+          : null,
+      );
+      setStudentHistory(
+        historyPayload && typeof historyPayload === "object"
+          ? historyPayload
+          : null,
+      );
+    } catch (error) {
+      setStudentDetailError(
+        extractErrorMessage(error, "Failed to load student details"),
+      );
+    } finally {
+      setStudentDetailLoading(false);
+    }
+  }, []);
+
+  const closeStudentDetailModal = () => {
+    setStudentDetailOpen(false);
+    setStudentDetailError("");
+  };
+
+  const handlePublishClassResults = useCallback(async () => {
+    const classId = Number(classReport?.classId || 0);
+    const isHomeroomReport =
+      classReport &&
+      homeroomClassId !== undefined &&
+      homeroomClassId !== null &&
+      Number(classReport.classId) === Number(homeroomClassId);
+
+    if (!classId) {
+      notify({
+        type: "warning",
+        message: "Generate class report first before publishing results.",
+      });
+      return;
+    }
+
+    if (!isHomeroomReport) {
+      notify({
+        type: "warning",
+        message: "Only the homeroom teacher can publish this class result.",
+      });
+      return;
+    }
+
+    if (classReport?.resultsPublished) {
+      notify({
+        type: "info",
+        message: "Results are already published for this class.",
+      });
+      return;
+    }
+
+    if (!classReport?.allMarksComplete) {
+      notify({
+        type: "warning",
+        message: "Cannot publish until all marks are submitted.",
+      });
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Publish results for ${classReport?.className || "this class"} (${classReport?.term?.academicYear || ""} Term ${classReport?.term?.semester || ""})? This locks mark edits.`,
+    );
+
+    if (!confirmed) return;
+
+    setPublishingClassId(classId);
+    try {
+      await classApi.publishResults(classId);
+      notify({ type: "success", message: "Class results published." });
+
+      await Promise.allSettled([
+        assignmentsQuery.refetch(),
+        teacherMarksQuery.refetch(),
+        academicReportQuery.refetch(),
+        homeroomClassQuery.refetch(),
+      ]);
+
+      await generateClassReport(classId);
+    } catch (error) {
+      notify({
+        type: "error",
+        message: extractErrorMessage(error, "Failed to publish class results"),
+      });
+    } finally {
+      setPublishingClassId(null);
+    }
+  }, [
+    classReport,
+    homeroomClassId,
+    assignmentsQuery,
+    teacherMarksQuery,
+    academicReportQuery,
+    homeroomClassQuery,
+    generateClassReport,
+  ]);
 
   const saveEnrollmentMark = useCallback(
     async (row, options = {}) => {
       const { silent = false } = options;
 
-      if (!teacherId) {
+      if (!resolvedTeacherId && !isTeacherRole) {
         throw new Error("Teacher profile missing from login session");
       }
 
@@ -592,7 +911,8 @@ const TeacherDashboard = () => {
       }
     },
     [
-      teacherId,
+      resolvedTeacherId,
+      isTeacherRole,
       selectedSubjectId,
       selectedClassMeta?.resultsPublished,
       draftMarks,
@@ -604,6 +924,7 @@ const TeacherDashboard = () => {
       await saveEnrollmentMark(row);
       await Promise.allSettled([
         teacherMarksQuery.refetch(),
+        classMarksQuery.refetch(),
         assignmentsQuery.refetch(),
       ]);
     } catch (error) {
@@ -642,6 +963,7 @@ const TeacherDashboard = () => {
 
       await Promise.allSettled([
         teacherMarksQuery.refetch(),
+        classMarksQuery.refetch(),
         assignmentsQuery.refetch(),
       ]);
 
@@ -663,13 +985,17 @@ const TeacherDashboard = () => {
   const errors = [
     assignmentsQuery.error,
     teacherMarksQuery.error,
+    classMarksQuery.error,
     academicReportQuery.error,
     homeroomClassQuery.error,
+    teacherDirectoryQuery.error,
   ].filter(Boolean);
 
   const loading =
+    teacherDirectoryQuery.loading ||
     assignmentsQuery.loading ||
     teacherMarksQuery.loading ||
+    classMarksQuery.loading ||
     academicReportQuery.loading ||
     homeroomClassQuery.loading;
 
@@ -677,8 +1003,10 @@ const TeacherDashboard = () => {
     await Promise.allSettled([
       assignmentsQuery.refetch(),
       teacherMarksQuery.refetch(),
+      classMarksQuery.refetch(),
       academicReportQuery.refetch(),
       homeroomClassQuery.refetch(),
+      teacherDirectoryQuery.refetch(),
     ]);
   };
 
@@ -704,7 +1032,7 @@ const TeacherDashboard = () => {
   );
 
   const canShowHomeroomData =
-    classReport &&
+    Boolean(classReport) &&
     homeroomClassId !== undefined &&
     homeroomClassId !== null &&
     Number(classReport.classId) === Number(homeroomClassId);
@@ -756,13 +1084,80 @@ const TeacherDashboard = () => {
     });
   }, [canShowHomeroomData, classReport, sectionAverageRange]);
 
-  const classCount = useMemo(
-    () => new Set(assignmentRows.map((row) => String(row.classId))).size,
-    [assignmentRows],
-  );
+  const studentHistoryRows = useMemo(() => {
+    if (!Array.isArray(studentHistory?.enrollments)) return [];
+
+    return studentHistory.enrollments.map((enrollment) => {
+      const marks = Array.isArray(enrollment.marks) ? enrollment.marks : [];
+      const total = marks.reduce(
+        (sum, mark) => sum + Number(mark.markObtained || 0),
+        0,
+      );
+
+      return {
+        enrollmentId: enrollment.enrollmentId,
+        className: enrollment.class?.className || "-",
+        grade: enrollment.class?.grade || "-",
+        academicYear: enrollment.class?.term?.academicYear || "-",
+        term: enrollment.class?.term?.semester || "-",
+        subjects: marks.length,
+        average: marks.length ? (total / marks.length).toFixed(1) : "-",
+        published: enrollment.class?.resultsPublished ? "Yes" : "No",
+      };
+    });
+  }, [studentHistory]);
+
+  const classCount = useMemo(() => {
+    const classIds = new Set(assignmentRows.map((row) => String(row.classId)));
+
+    if (homeroomClassId !== undefined && homeroomClassId !== null) {
+      classIds.add(String(homeroomClassId));
+    }
+
+    return classIds.size;
+  }, [assignmentRows, homeroomClassId]);
+
+  const assignmentDisplayRows = useMemo(() => {
+    const rows = [...assignmentStats];
+
+    const hasHomeroomRow = rows.some(
+      (row) => Number(row.classId) === Number(homeroomClassId),
+    );
+
+    if (!hasHomeroomRow && homeroomClassId) {
+      const homeroomMarks = scopedMarks.filter(
+        (mark) => Number(mark.enrollment?.classId) === Number(homeroomClassId),
+      );
+
+      rows.unshift({
+        teacherClassSubjectId: `HR-${homeroomClassId}`,
+        classId: homeroomClassId,
+        className: homeroomClass?.className || "Homeroom",
+        grade: homeroomClass?.grade || "-",
+        resultsPublished: Boolean(homeroomClass?.resultsPublished),
+        isHomeroomClass: true,
+        subjectId: null,
+        subjectName: "Homeroom Access",
+        subjectCode: "HR",
+        academicYear:
+          homeroomClass?.term?.academicYear ||
+          homeroomClass?.term?.academic_year ||
+          "-",
+        semester: homeroomClass?.term?.semester || "-",
+        termKey: `${homeroomClass?.term?.academicYear || "-"}::${homeroomClass?.term?.semester || "-"}`,
+        marksSubmitted: homeroomMarks.length,
+      });
+    }
+
+    return rows;
+  }, [assignmentStats, homeroomClassId, homeroomClass, scopedMarks]);
 
   const teacherDisplayName =
     user?.teacher?.fullName || user?.teacher?.full_name || "Teacher";
+
+  const hasTeacherIdentity = Boolean(
+    resolvedTeacherId || userId || isTeacherRole,
+  );
 
   return (
     <div className="space-y-4">
@@ -783,7 +1178,7 @@ const TeacherDashboard = () => {
         />
       ) : null}
 
-      {!loading && !teacherId ? (
+      {!loading && !hasTeacherIdentity ? (
         <StateView
           type="empty"
           title="Teacher profile not linked"
@@ -906,7 +1301,7 @@ const TeacherDashboard = () => {
               type="button"
               loading={bulkSaving}
               disabled={
-                !teacherId ||
+                !hasTeacherIdentity ||
                 !selectedSubjectMeta ||
                 selectedClassMeta?.resultsPublished ||
                 loadingRoster
@@ -970,7 +1365,13 @@ const TeacherDashboard = () => {
                       return (
                         <tr key={row.enrollmentId}>
                           <td className="px-3 py-2 text-sm text-slate-700">
-                            {row.studentSchoolId}
+                            <button
+                              type="button"
+                              onClick={() => handleOpenStudentDetail(row)}
+                              className="font-medium text-indigo-700 hover:text-indigo-900 hover:underline"
+                            >
+                              {row.studentSchoolId}
+                            </button>
                           </td>
                           <td className="px-3 py-2 text-sm text-slate-800">
                             {row.studentName}
@@ -1052,6 +1453,22 @@ const TeacherDashboard = () => {
             >
               Load Homeroom Roster
             </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={handlePublishClassResults}
+              loading={publishingClassId === Number(classReport?.classId || 0)}
+              disabled={
+                !classReport ||
+                !canShowHomeroomData ||
+                classReport?.resultsPublished ||
+                !classReport?.allMarksComplete
+              }
+            >
+              {classReport?.resultsPublished
+                ? "Already Published"
+                : "Publish Results"}
+            </Button>
           </div>
         </div>
 
@@ -1074,6 +1491,12 @@ const TeacherDashboard = () => {
               {(classReport.subjectCompletionStatus || []).length} | Marks
               Complete: {classReport.allMarksComplete ? "Yes" : "No"}
             </p>
+            {canShowHomeroomData && !classReport.resultsPublished ? (
+              <p className="text-xs font-semibold text-emerald-700">
+                Homeroom permission active: you can publish once all marks are
+                complete.
+              </p>
+            ) : null}
             {!canShowHomeroomData ? (
               <p className="text-xs font-semibold text-amber-700">
                 This class is not your homeroom class. Roster and student cards
@@ -1099,9 +1522,13 @@ const TeacherDashboard = () => {
                 render: (row) => (
                   <div>
                     <p className="font-medium">{row.studentName}</p>
-                    <p className="text-xs text-slate-500">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenStudentDetail(row)}
+                      className="text-xs font-medium text-indigo-700 hover:text-indigo-900 hover:underline"
+                    >
                       {row.studentSchoolId}
-                    </p>
+                    </button>
                   </div>
                 ),
               },
@@ -1119,8 +1546,8 @@ const TeacherDashboard = () => {
 
       <TableSection title="Your Class Assignments">
         <Table
-          rows={assignmentStats}
-          loading={assignmentsQuery.loading && !assignmentStats.length}
+          rows={assignmentDisplayRows}
+          loading={assignmentsQuery.loading && !assignmentDisplayRows.length}
           error={assignmentsQuery.error}
           columns={[
             { key: "className", title: "Class" },
@@ -1156,6 +1583,7 @@ const TeacherDashboard = () => {
                   <button
                     onClick={() => applyAssignmentToHierarchy(row)}
                     className="text-sm text-emerald-600 hover:text-emerald-800"
+                    disabled={!row.subjectId}
                   >
                     Use In Form
                   </button>
@@ -1246,7 +1674,19 @@ const TeacherDashboard = () => {
             error={null}
             columns={[
               { key: "studentId", title: "Student ID" },
-              { key: "studentSchoolId", title: "School ID" },
+              {
+                key: "studentSchoolId",
+                title: "School ID",
+                render: (row) => (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenStudentDetail(row)}
+                    className="font-medium text-indigo-700 hover:text-indigo-900 hover:underline"
+                  >
+                    {row.studentSchoolId}
+                  </button>
+                ),
+              },
               { key: "studentName", title: "Name" },
               { key: "gender", title: "Gender" },
               { key: "total", title: "Total" },
@@ -1320,6 +1760,69 @@ const TeacherDashboard = () => {
           ) : null}
         </div>
       ) : null}
+
+      <Modal
+        isOpen={studentDetailOpen}
+        onClose={closeStudentDetailModal}
+        title="Student Detail"
+        size="large"
+      >
+        {studentDetailLoading ? (
+          <p className="text-sm text-slate-600">Loading student details...</p>
+        ) : studentDetailError ? (
+          <StateView
+            type="error"
+            title="Unable to load student details"
+            description={studentDetailError}
+          />
+        ) : !studentDetail ? (
+          <StateView
+            type="empty"
+            title="No student data"
+            description="Select a student with a valid School ID to view details."
+          />
+        ) : (
+          <div className="space-y-4">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <p className="text-sm font-semibold text-slate-900">
+                {studentDetail.fullName || "-"}
+              </p>
+              <div className="mt-2 grid gap-2 text-xs text-slate-700 sm:grid-cols-2 lg:grid-cols-4">
+                <p>
+                  School ID:{" "}
+                  <strong>{studentDetail.studentSchoolId || "-"}</strong>
+                </p>
+                <p>
+                  Student ID: <strong>{studentDetail.studentId || "-"}</strong>
+                </p>
+                <p>
+                  Gender: <strong>{studentDetail.gender || "-"}</strong>
+                </p>
+                <p>
+                  Registered:{" "}
+                  <strong>{formatDate(studentDetail.createdAt)}</strong>
+                </p>
+              </div>
+            </div>
+
+            <Table
+              rows={studentHistoryRows}
+              columns={[
+                { key: "academicYear", title: "Academic Year" },
+                { key: "term", title: "Term" },
+                { key: "grade", title: "Grade" },
+                { key: "className", title: "Class" },
+                { key: "subjects", title: "Subjects" },
+                { key: "average", title: "Average" },
+                { key: "published", title: "Published" },
+              ]}
+              searchPlaceholder="Search student history..."
+              pageSize={8}
+              pageSizeOptions={[8, 16, 24]}
+            />
+          </div>
+        )}
+      </Modal>
     </div>
   );
 };

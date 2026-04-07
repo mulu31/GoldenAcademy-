@@ -4,8 +4,11 @@ import userApi from "../../api/userApi";
 import departmentApi from "../../api/departmentApi";
 import termApi from "../../api/termApi";
 import classApi from "../../api/classApi";
+import teacherApi from "../../api/teacherApi";
+import subjectApi from "../../api/subjectApi";
 import auditApi from "../../api/auditApi";
 import roleApi from "../../api/roleApi";
+import { extractPayload } from "../../api/responseAdapter";
 import Table from "../common/Table";
 import TableSection from "../common/TableSection";
 import StateView from "../common/StateView";
@@ -52,6 +55,8 @@ const AdminDashboard = () => {
   const [editingDepartment, setEditingDepartment] = useState(null);
   const [auditModalOpen, setAuditModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [assignClassSubjectModalOpen, setAssignClassSubjectModalOpen] =
+    useState(false);
   const [confirmModalOpen, setConfirmModalOpen] = useState(false);
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -60,6 +65,8 @@ const AdminDashboard = () => {
   const departmentsQuery = useFetch(() => departmentApi.getAll(), []);
   const termsQuery = useFetch(() => termApi.getAll(), []);
   const classesQuery = useFetch(() => classApi.getAll(), []);
+  const teachersQuery = useFetch(() => teacherApi.getAll(), []);
+  const subjectsQuery = useFetch(() => subjectApi.getAll(), []);
   const rolesQuery = useFetch(() => roleApi.getAll(), []);
   const auditQuery = useFetch(
     () => auditApi.getAll({ page: 1, limit: 20 }),
@@ -79,6 +86,8 @@ const AdminDashboard = () => {
     departmentsQuery.error,
     termsQuery.error,
     classesQuery.error,
+    teachersQuery.error,
+    subjectsQuery.error,
   ].filter(Boolean);
 
   // User form
@@ -212,6 +221,84 @@ const AdminDashboard = () => {
     },
   });
 
+  // Assign teacher to class-subject form
+  const assignClassSubjectForm = useForm({
+    initialValues: {
+      teacher_id: "",
+      class_id: "",
+      subject_id: "",
+    },
+    onSubmit: async (values) => {
+      setSubmitting(true);
+      try {
+        const classId = parseInt(values.class_id, 10);
+        const subjectId = parseInt(values.subject_id, 10);
+        const teacherId = parseInt(values.teacher_id, 10);
+
+        const classSubjectsResponse = await classApi.getSubjects(classId);
+        const classSubjectsPayload = extractPayload(classSubjectsResponse);
+        const classSubjects = Array.isArray(classSubjectsPayload)
+          ? classSubjectsPayload
+          : [];
+
+        let mappedClassSubject = classSubjects.find((row) => {
+          const existingSubjectId =
+            row.subjectId ??
+            row.subject_id ??
+            row.subject?.subjectId ??
+            row.subject?.subject_id;
+          return Number(existingSubjectId) === subjectId;
+        });
+
+        if (!mappedClassSubject) {
+          const addSubjectResponse = await classApi.addSubject(classId, {
+            subjectId,
+          });
+          mappedClassSubject = extractPayload(addSubjectResponse);
+        }
+
+        const classSubjectId =
+          mappedClassSubject?.classSubjectId ??
+          mappedClassSubject?.class_subject_id;
+
+        if (!classSubjectId) {
+          throw new Error("Could not resolve class-subject mapping");
+        }
+
+        await teacherApi.assignToSubject({
+          teacherId,
+          classSubjectId: Number(classSubjectId),
+        });
+
+        notify({
+          type: "success",
+          message: "Teacher assigned to class successfully",
+        });
+        setAssignClassSubjectModalOpen(false);
+        assignClassSubjectForm.reset();
+        await teachersQuery.refetch();
+      } catch (error) {
+        notify({
+          type: "error",
+          message:
+            error.response?.data?.error ||
+            error.response?.data?.message ||
+            error.message ||
+            "Failed to assign teacher to class",
+        });
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    validate: (values) => {
+      const errors = {};
+      if (!values.teacher_id) errors.teacher_id = "Teacher is required";
+      if (!values.class_id) errors.class_id = "Class is required";
+      if (!values.subject_id) errors.subject_id = "Subject is required";
+      return errors;
+    },
+  });
+
   const termLookup = useMemo(
     () =>
       Object.fromEntries(
@@ -277,6 +364,21 @@ const AdminDashboard = () => {
     label: role.name,
   }));
 
+  const teacherOptions = (teachersQuery.data || []).map((teacher) => ({
+    value: teacher.teacher_id ?? teacher.teacherId,
+    label: teacher.full_name ?? teacher.fullName,
+  }));
+
+  const classOptions = (classesQuery.data || []).map((classRow) => ({
+    value: classRow.class_id ?? classRow.classId,
+    label: `${classRow.grade || "Grade"} - ${classRow.class_name || classRow.className || "Class"}`,
+  }));
+
+  const subjectOptions = (subjectsQuery.data || []).map((subject) => ({
+    value: subject.subject_id ?? subject.subjectId,
+    label: `${subject.name} (${subject.code || "-"})`,
+  }));
+
   const currentUserId = authUser?.user_id ?? authUser?.userId;
 
   const refreshAll = async () => {
@@ -285,6 +387,8 @@ const AdminDashboard = () => {
       departmentsQuery.refetch(),
       termsQuery.refetch(),
       classesQuery.refetch(),
+      teachersQuery.refetch(),
+      subjectsQuery.refetch(),
       auditQuery.refetch(),
     ]);
   };
@@ -525,6 +629,21 @@ const AdminDashboard = () => {
             <p className="mt-1 text-xs text-slate-500">{link.description}</p>
           </Link>
         ))}
+        <button
+          type="button"
+          onClick={() => {
+            assignClassSubjectForm.reset();
+            setAssignClassSubjectModalOpen(true);
+          }}
+          className="card text-left"
+        >
+          <p className="text-sm font-semibold text-slate-800">
+            Assign Teacher To Class
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            Map teacher to class and subject using existing assignment rules.
+          </p>
+        </button>
       </div>
 
       {/* User Management Section */}
@@ -873,6 +992,67 @@ const AdminDashboard = () => {
             pageSizeOptions={[20, 50, 100]}
           />
         </div>
+      </Modal>
+
+      {/* Assign Teacher To Class Modal */}
+      <Modal
+        open={assignClassSubjectModalOpen}
+        title="Assign Teacher To Class"
+        onClose={() => {
+          setAssignClassSubjectModalOpen(false);
+          assignClassSubjectForm.reset();
+        }}
+      >
+        <form
+          onSubmit={assignClassSubjectForm.handleSubmit}
+          className="space-y-4"
+        >
+          <Select
+            label="Teacher"
+            name="teacher_id"
+            value={assignClassSubjectForm.values.teacher_id}
+            onChange={assignClassSubjectForm.handleChange}
+            options={teacherOptions}
+            error={assignClassSubjectForm.errors.teacher_id}
+            required
+          />
+          <Select
+            label="Class"
+            name="class_id"
+            value={assignClassSubjectForm.values.class_id}
+            onChange={assignClassSubjectForm.handleChange}
+            options={classOptions}
+            error={assignClassSubjectForm.errors.class_id}
+            required
+          />
+          <Select
+            label="Subject"
+            name="subject_id"
+            value={assignClassSubjectForm.values.subject_id}
+            onChange={assignClassSubjectForm.handleChange}
+            options={subjectOptions}
+            error={assignClassSubjectForm.errors.subject_id}
+            required
+          />
+          <p className="text-xs text-slate-500">
+            If the class-subject mapping is missing, it is auto-created before
+            assignment.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setAssignClassSubjectModalOpen(false);
+                assignClassSubjectForm.reset();
+              }}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" loading={submitting}>
+              Assign
+            </Button>
+          </div>
+        </form>
       </Modal>
     </div>
   );

@@ -16,13 +16,14 @@ import PromotionForm from "../students/PromotionForm";
 import { useFetch } from "../../hooks/useFetch";
 import { formatDate } from "../../utils/formatDate";
 import { notify } from "../../utils/notifications";
-import { 
-  UserPlus, 
-  Users, 
-  BookOpen, 
-  TrendingUp, 
+import { extractErrorMessage, extractPayload } from "../../api/responseAdapter";
+import {
+  UserPlus,
+  Users,
+  BookOpen,
+  TrendingUp,
   History,
-  Search
+  Search,
 } from "lucide-react";
 
 const RegistrarDashboard = () => {
@@ -35,10 +36,23 @@ const RegistrarDashboard = () => {
   const studentsQuery = useFetch(() => studentApi.getAll(), []);
   const classesQuery = useFetch(() => classApi.getAll(), []);
   const termsQuery = useFetch(() => termApi.getAll(), []);
-  const enrollmentsQuery = useFetch(() => studentApi.getAllEnrollments(), []);
+  const enrollmentsQuery = useFetch(
+    () => studentApi.getAllEnrollments(),
+    [],
+    true,
+    {
+      mode: "payload",
+      initialData: { enrollments: [], total: 0, page: 1, totalPages: 1 },
+    },
+  );
   const historyQuery = useFetch(
-    () => selectedStudentId ? studentApi.getHistory(selectedStudentId) : Promise.resolve(null),
-    [selectedStudentId]
+    () =>
+      selectedStudentId
+        ? studentApi.getHistory(selectedStudentId)
+        : Promise.resolve(null),
+    [selectedStudentId],
+    true,
+    { mode: "payload", initialData: null },
   );
 
   const errors = [
@@ -74,11 +88,11 @@ const RegistrarDashboard = () => {
   const enrollmentStats = useMemo(() => {
     const enrollments = enrollmentsQuery.data?.enrollments || [];
     const currentTerm = termsQuery.data?.[0]; // Assuming first term is current
-    
-    const currentTermEnrollments = currentTerm 
-      ? enrollments.filter(e => e.class?.termId === currentTerm.term_id)
+
+    const currentTermEnrollments = currentTerm
+      ? enrollments.filter((e) => e.class?.termId === currentTerm.term_id)
       : [];
-    
+
     return {
       total: enrollments.length,
       currentTerm: currentTermEnrollments.length,
@@ -97,8 +111,13 @@ const RegistrarDashboard = () => {
       .slice(0, 10)
       .map((row) => ({
         ...row,
-        student_label: row.student?.fullName || studentLookup[row.studentId] || row.studentId,
-        class_label: row.class ? `${row.class.className} (${row.class.grade})` : classLookup[row.classId] || row.classId,
+        student_label:
+          row.student?.fullName ||
+          studentLookup[row.studentId] ||
+          row.studentId,
+        class_label: row.class
+          ? `${row.class.className} (${row.class.grade})`
+          : classLookup[row.classId] || row.classId,
         enrolled_on: formatDate(row.enrolledAt),
       }));
   }, [enrollmentsQuery.data, studentLookup, classLookup]);
@@ -122,14 +141,21 @@ const RegistrarDashboard = () => {
   const handleCreateStudent = async (values) => {
     setSaving(true);
     try {
-      await studentApi.create(values);
-      notify({ type: "success", message: "Student created successfully" });
+      const response = await studentApi.create({
+        fullName: values.fullName,
+        gender: values.gender,
+      });
+      const created = extractPayload(response);
+      notify({
+        type: "success",
+        message: `Student registered successfully. Assigned School ID: ${created?.studentSchoolId || "N/A"}`,
+      });
       await studentsQuery.refetch();
       setActiveModal(null);
     } catch (error) {
       notify({
         type: "error",
-        message: error?.response?.data?.error || "Failed to create student",
+        message: extractErrorMessage(error, "Student registration failed"),
       });
     } finally {
       setSaving(false);
@@ -140,8 +166,8 @@ const RegistrarDashboard = () => {
     setSaving(true);
     try {
       await studentApi.enroll({
-        studentId: Number(values.student_id),
-        classId: Number(values.class_id),
+        studentId: Number(values.studentId),
+        classId: Number(values.classId),
       });
       notify({ type: "success", message: "Student enrolled successfully" });
       await enrollmentsQuery.refetch();
@@ -149,7 +175,7 @@ const RegistrarDashboard = () => {
     } catch (error) {
       notify({
         type: "error",
-        message: error?.response?.data?.error || "Enrollment failed",
+        message: extractErrorMessage(error, "Enrollment failed"),
       });
     } finally {
       setSaving(false);
@@ -165,11 +191,12 @@ const RegistrarDashboard = () => {
     setSearchLoading(true);
     try {
       const response = await studentApi.search(searchTerm);
-      setSearchResults(response.data?.students || []);
+      const payload = extractPayload(response) || {};
+      setSearchResults(payload.students || []);
     } catch (error) {
       notify({
         type: "error",
-        message: error?.response?.data?.error || "Search failed",
+        message: extractErrorMessage(error, "Student search failed"),
       });
       setSearchResults([]);
     } finally {
@@ -185,19 +212,30 @@ const RegistrarDashboard = () => {
         nextClassId: Number(values.nextClassId),
         nextTermId: Number(values.nextTermId),
       });
-      
-      const promotedCount = response.data?.promotedCount || 0;
-      notify({ 
-        type: "success", 
-        message: `Successfully promoted ${promotedCount} student(s)` 
+
+      const payload = extractPayload(response) || {};
+      const promotedCount = payload.promotedCount || 0;
+      const currentLabel = payload.currentClass
+        ? `${payload.currentClass.className} (${payload.currentClass.term?.academicYear} Term ${payload.currentClass.term?.semester})`
+        : "selected current class";
+      const nextLabel = payload.nextClass
+        ? `${payload.nextClass.className} (${payload.nextClass.term?.academicYear} Term ${payload.nextClass.term?.semester})`
+        : "selected next class";
+
+      notify({
+        type: "success",
+        message: `Promotion completed: ${promotedCount} student(s) moved from ${currentLabel} to ${nextLabel}.`,
       });
-      
+
       await enrollmentsQuery.refetch();
       setActiveModal(null);
     } catch (error) {
       notify({
         type: "error",
-        message: error?.response?.data?.error || "Promotion failed",
+        message: extractErrorMessage(
+          error,
+          "Promotion failed. Verify class progression and results publication status.",
+        ),
       });
     } finally {
       setSaving(false);
@@ -264,7 +302,9 @@ const RegistrarDashboard = () => {
             </div>
             <div>
               <p className="text-sm font-semibold">Register Student</p>
-              <p className="text-xs text-slate-500">Add new student to system</p>
+              <p className="text-xs text-slate-500">
+                Add new student to system
+              </p>
             </div>
           </div>
         </button>
@@ -377,7 +417,7 @@ const RegistrarDashboard = () => {
         title="Register New Student"
       >
         <StudentForm
-          initialValues={{ student_school_id: "", full_name: "", gender: "" }}
+          initialValues={{ fullName: "", gender: "" }}
           onSubmit={handleCreateStudent}
           loading={saving}
         />

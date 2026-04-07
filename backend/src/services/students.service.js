@@ -2,6 +2,36 @@ import pool from "../config/db.js";
 import { ApiError } from "../utils/ApiError.js";
 import { handleDatabaseError } from "../utils/dbErrorHandler.js";
 
+const getAcademicYearCode = (date = new Date()) => {
+  const year = date.getFullYear();
+  const current = String(year).slice(-2);
+  const next = String(year + 1).slice(-2);
+  return `${current}${next}`;
+};
+
+const generateStudentSchoolId = async (client) => {
+  const academicYearCode = getAcademicYearCode();
+  await client.query("SELECT pg_advisory_xact_lock($1)", [
+    parseInt(academicYearCode, 10),
+  ]);
+
+  const maxResult = await client.query(
+    `
+      SELECT COALESCE(
+        MAX((regexp_match(student_school_id, '^GA(\\d{4})/' || $1 || '$'))[1]::int),
+        0
+      ) AS max_seq
+      FROM students
+      WHERE student_school_id ~ ('^GA\\d{4}/' || $1 || '$')
+    `,
+    [academicYearCode],
+  );
+
+  const nextSequence = (maxResult.rows[0]?.max_seq || 0) + 1;
+  const sequencePart = String(nextSequence).padStart(4, "0");
+  return `GA${sequencePart}/${academicYearCode}`;
+};
+
 export const studentsService = {
   list: async () => {
     const result = await pool.query(`
@@ -15,19 +45,20 @@ export const studentsService = {
       FROM students
       ORDER BY full_name ASC
     `);
-    
-    return result.rows.map(row => ({
+
+    return result.rows.map((row) => ({
       studentId: row.student_id,
       studentSchoolId: row.student_school_id,
       fullName: row.full_name,
       gender: row.gender,
       createdAt: row.created_at,
-      updatedAt: row.updated_at
+      updatedAt: row.updated_at,
     }));
   },
 
   getById: async (id) => {
-    const result = await pool.query(`
+    const result = await pool.query(
+      `
       SELECT 
         student_id, 
         student_school_id, 
@@ -37,12 +68,14 @@ export const studentsService = {
         updated_at
       FROM students
       WHERE student_id = $1
-    `, [parseInt(id)]);
-    
+    `,
+      [parseInt(id)],
+    );
+
     if (result.rows.length === 0) {
-      throw new ApiError(404, 'Student not found');
+      throw new ApiError(404, "Student not found");
     }
-    
+
     const row = result.rows[0];
     return {
       studentId: row.student_id,
@@ -50,20 +83,30 @@ export const studentsService = {
       fullName: row.full_name,
       gender: row.gender,
       createdAt: row.created_at,
-      updatedAt: row.updated_at
+      updatedAt: row.updated_at,
     };
   },
 
   create: async (payload) => {
-    const { studentSchoolId, fullName, gender } = payload;
-    
+    const { fullName, gender } = payload;
+
+    const client = await pool.connect();
     try {
-      const result = await pool.query(`
+      await client.query("BEGIN");
+
+      const generatedStudentSchoolId = await generateStudentSchoolId(client);
+
+      const result = await client.query(
+        `
         INSERT INTO students (student_school_id, full_name, gender)
         VALUES ($1, $2, $3)
         RETURNING student_id, student_school_id, full_name, gender, created_at, updated_at
-      `, [studentSchoolId, fullName, gender || null]);
-      
+      `,
+        [generatedStudentSchoolId, fullName, gender || null],
+      );
+
+      await client.query("COMMIT");
+
       const row = result.rows[0];
       return {
         studentId: row.student_id,
@@ -71,20 +114,23 @@ export const studentsService = {
         fullName: row.full_name,
         gender: row.gender,
         createdAt: row.created_at,
-        updatedAt: row.updated_at
+        updatedAt: row.updated_at,
       };
     } catch (error) {
-      handleDatabaseError(error, 'Student with this school ID already exists');
+      await client.query("ROLLBACK");
+      handleDatabaseError(error, "Student with this school ID already exists");
+    } finally {
+      client.release();
     }
   },
 
   update: async (id, payload) => {
     const { studentSchoolId, fullName, gender } = payload;
-    
+
     const updates = [];
     const values = [];
     let paramCount = 1;
-    
+
     if (studentSchoolId !== undefined) {
       updates.push(`student_school_id = $${paramCount++}`);
       values.push(studentSchoolId);
@@ -97,26 +143,29 @@ export const studentsService = {
       updates.push(`gender = $${paramCount++}`);
       values.push(gender);
     }
-    
+
     if (updates.length === 0) {
-      throw new ApiError(400, 'No fields to update');
+      throw new ApiError(400, "No fields to update");
     }
-    
+
     updates.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(parseInt(id));
-    
+
     try {
-      const result = await pool.query(`
+      const result = await pool.query(
+        `
         UPDATE students 
-        SET ${updates.join(', ')} 
+        SET ${updates.join(", ")} 
         WHERE student_id = $${paramCount}
         RETURNING student_id, student_school_id, full_name, gender, created_at, updated_at
-      `, values);
-      
+      `,
+        values,
+      );
+
       if (result.rows.length === 0) {
-        throw new ApiError(404, 'Student not found');
+        throw new ApiError(404, "Student not found");
       }
-      
+
       const row = result.rows[0];
       return {
         studentId: row.student_id,
@@ -124,34 +173,37 @@ export const studentsService = {
         fullName: row.full_name,
         gender: row.gender,
         createdAt: row.created_at,
-        updatedAt: row.updated_at
+        updatedAt: row.updated_at,
       };
     } catch (error) {
-      handleDatabaseError(error, 'Student with this school ID already exists');
+      handleDatabaseError(error, "Student with this school ID already exists");
     }
   },
 
   remove: async (id) => {
     const result = await pool.query(
-      'DELETE FROM students WHERE student_id = $1 RETURNING student_id',
-      [parseInt(id)]
+      "DELETE FROM students WHERE student_id = $1 RETURNING student_id",
+      [parseInt(id)],
     );
-    
+
     if (result.rows.length === 0) {
-      throw new ApiError(404, 'Student not found');
+      throw new ApiError(404, "Student not found");
     }
-    
+
     return { success: true };
   },
 
   search: async (searchTerm, page = 1, limit = 50) => {
-    const offset = (page - 1) * limit;
-    
+    const safePage = Math.max(1, parseInt(page, 10) || 1);
+    const safeLimit = Math.min(1000, Math.max(1, parseInt(limit, 10) || 50));
+    const offset = (safePage - 1) * safeLimit;
+    const normalizedSearch = String(searchTerm ?? "").trim();
+
     let query;
     let countQuery;
     let params;
-    
-    if (searchTerm) {
+
+    if (normalizedSearch.length > 0) {
       // Search with filter
       query = `
         SELECT 
@@ -164,43 +216,52 @@ export const studentsService = {
         FROM students
         WHERE 
           student_school_id ILIKE $1 OR 
-          full_name ILIKE $1
+          full_name ILIKE $1 OR
+          CAST(student_id AS TEXT) ILIKE $1 OR
+          ($2 <> '' AND regexp_replace(lower(student_school_id), '[^a-z0-9]', '', 'g') LIKE '%' || $2 || '%') OR
+          ($2 <> '' AND regexp_replace(lower(full_name), '[^a-z0-9]', '', 'g') LIKE '%' || $2 || '%')
         ORDER BY full_name ASC
-        LIMIT $2 OFFSET $3
+        LIMIT $3 OFFSET $4
       `;
-      
+
       countQuery = `
         SELECT COUNT(*) as count
         FROM students
         WHERE 
           student_school_id ILIKE $1 OR 
-          full_name ILIKE $1
+          full_name ILIKE $1 OR
+          CAST(student_id AS TEXT) ILIKE $1 OR
+          ($2 <> '' AND regexp_replace(lower(student_school_id), '[^a-z0-9]', '', 'g') LIKE '%' || $2 || '%') OR
+          ($2 <> '' AND regexp_replace(lower(full_name), '[^a-z0-9]', '', 'g') LIKE '%' || $2 || '%')
       `;
-      
-      const searchPattern = `%${searchTerm}%`;
-      params = [searchPattern, limit, offset];
-      
+
+      const searchPattern = `%${normalizedSearch}%`;
+      const normalizedPattern = normalizedSearch
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+      params = [searchPattern, normalizedPattern, safeLimit, offset];
+
       const [studentsResult, countResult] = await Promise.all([
         pool.query(query, params),
-        pool.query(countQuery, [searchPattern])
+        pool.query(countQuery, [searchPattern, normalizedPattern]),
       ]);
-      
-      const students = studentsResult.rows.map(row => ({
+
+      const students = studentsResult.rows.map((row) => ({
         studentId: row.student_id,
         studentSchoolId: row.student_school_id,
         fullName: row.full_name,
         gender: row.gender,
         createdAt: row.created_at,
-        updatedAt: row.updated_at
+        updatedAt: row.updated_at,
       }));
-      
+
       const total = parseInt(countResult.rows[0].count);
-      
+
       return {
         students,
         total,
-        page,
-        totalPages: Math.ceil(total / limit)
+        page: safePage,
+        totalPages: Math.ceil(total / safeLimit),
       };
     } else {
       // No search term - return all with pagination
@@ -216,30 +277,30 @@ export const studentsService = {
         ORDER BY full_name ASC
         LIMIT $1 OFFSET $2
       `;
-      
-      countQuery = 'SELECT COUNT(*) as count FROM students';
-      
+
+      countQuery = "SELECT COUNT(*) as count FROM students";
+
       const [studentsResult, countResult] = await Promise.all([
-        pool.query(query, [limit, offset]),
-        pool.query(countQuery)
+        pool.query(query, [safeLimit, offset]),
+        pool.query(countQuery),
       ]);
-      
-      const students = studentsResult.rows.map(row => ({
+
+      const students = studentsResult.rows.map((row) => ({
         studentId: row.student_id,
         studentSchoolId: row.student_school_id,
         fullName: row.full_name,
         gender: row.gender,
         createdAt: row.created_at,
-        updatedAt: row.updated_at
+        updatedAt: row.updated_at,
       }));
-      
+
       const total = parseInt(countResult.rows[0].count);
-      
+
       return {
         students,
         total,
-        page,
-        totalPages: Math.ceil(total / limit)
+        page: safePage,
+        totalPages: Math.ceil(total / safeLimit),
       };
     }
   },
@@ -249,7 +310,8 @@ export const studentsService = {
    * Requirement 5.5: Return student data with nested enrollment and class information
    */
   getByIdWithEnrollment: async (id) => {
-    const result = await pool.query(`
+    const result = await pool.query(
+      `
       SELECT 
         s.student_id, 
         s.student_school_id, 
@@ -281,12 +343,14 @@ export const studentsService = {
       LEFT JOIN terms t ON c.term_id = t.term_id
       WHERE s.student_id = $1
       GROUP BY s.student_id
-    `, [parseInt(id)]);
-    
+    `,
+      [parseInt(id)],
+    );
+
     if (result.rows.length === 0) {
-      throw new ApiError(404, 'Student not found');
+      throw new ApiError(404, "Student not found");
     }
-    
+
     const row = result.rows[0];
     return {
       studentId: row.student_id,
@@ -295,7 +359,7 @@ export const studentsService = {
       gender: row.gender,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
-      enrollments: row.enrollments || []
+      enrollments: row.enrollments || [],
     };
   },
 
@@ -305,9 +369,10 @@ export const studentsService = {
    */
   getEnrollmentHistory: async (id) => {
     const parsedId = parseInt(id);
-    
+
     // First verify student exists
-    const studentResult = await pool.query(`
+    const studentResult = await pool.query(
+      `
       SELECT 
         student_id, 
         student_school_id, 
@@ -317,23 +382,26 @@ export const studentsService = {
         updated_at
       FROM students
       WHERE student_id = $1
-    `, [parsedId]);
-    
+    `,
+      [parsedId],
+    );
+
     if (studentResult.rows.length === 0) {
-      throw new ApiError(404, 'Student not found');
+      throw new ApiError(404, "Student not found");
     }
-    
+
     const student = {
       studentId: studentResult.rows[0].student_id,
       studentSchoolId: studentResult.rows[0].student_school_id,
       fullName: studentResult.rows[0].full_name,
       gender: studentResult.rows[0].gender,
       createdAt: studentResult.rows[0].created_at,
-      updatedAt: studentResult.rows[0].updated_at
+      updatedAt: studentResult.rows[0].updated_at,
     };
-    
+
     // Get enrollment history with classes, terms, homeroom teachers, and marks
-    const enrollmentsResult = await pool.query(`
+    const enrollmentsResult = await pool.query(
+      `
       SELECT 
         se.enrollment_id,
         se.class_id,
@@ -374,9 +442,11 @@ export const studentsService = {
         t.term_id, t.academic_year, t.semester,
         ht.teacher_id, ht.full_name
       ORDER BY t.academic_year DESC, t.semester DESC
-    `, [parsedId]);
-    
-    const enrollments = enrollmentsResult.rows.map(row => ({
+    `,
+      [parsedId],
+    );
+
+    const enrollments = enrollmentsResult.rows.map((row) => ({
       enrollmentId: row.enrollment_id,
       classId: row.class_id,
       enrolledAt: row.enrolled_at,
@@ -388,16 +458,16 @@ export const studentsService = {
         term: {
           termId: row.term_id,
           academicYear: row.academic_year,
-          semester: row.semester
+          semester: row.semester,
         },
-        homeroomTeacher: row.homeroom_teacher
+        homeroomTeacher: row.homeroom_teacher,
       },
-      marks: row.marks || []
+      marks: row.marks || [],
     }));
-    
+
     return {
       student,
-      enrollments
+      enrollments,
     };
-  }
+  },
 };

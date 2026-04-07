@@ -12,15 +12,7 @@ const StudentForm = ({ initialValues, onSubmit, loading }) => {
   });
 
   return (
-    <form onSubmit={form.handleSubmit} className="grid gap-3 md:grid-cols-3">
-      <Input
-        label="School ID"
-        name="studentSchoolId"
-        value={form.values.studentSchoolId}
-        onChange={form.handleChange}
-        error={form.errors.studentSchoolId}
-        required
-      />
+    <form onSubmit={form.handleSubmit} className="grid gap-3 md:grid-cols-2">
       <Input
         label="Full Name"
         name="fullName"
@@ -41,7 +33,7 @@ const StudentForm = ({ initialValues, onSubmit, loading }) => {
         error={form.errors.gender}
         required
       />
-      <div className="md:col-span-3">
+      <div className="md:col-span-2">
         <Button type="submit" loading={loading}>
           Save Student
         </Button>

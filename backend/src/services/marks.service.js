@@ -298,13 +298,15 @@ export const marksService = {
       JOIN classes c ON e.class_id = c.class_id
       JOIN subjects s ON m.subject_id = s.subject_id
       LEFT JOIN teachers t ON m.teacher_id = t.teacher_id
-      WHERE EXISTS (
-        SELECT 1 FROM teacher_class_subject tcs
-        JOIN class_subjects cs ON tcs.class_subject_id = cs.class_subject_id
-        WHERE tcs.teacher_id = $1
-          AND cs.class_id = e.class_id
-          AND cs.subject_id = m.subject_id
-      )
+      WHERE m.teacher_id = $1
+         OR EXISTS (
+              SELECT 1 FROM teacher_class_subject tcs
+              JOIN class_subjects cs ON tcs.class_subject_id = cs.class_subject_id
+              WHERE tcs.teacher_id = $1
+                AND cs.class_id = e.class_id
+                AND cs.subject_id = m.subject_id
+            )
+         OR c.homeroom_teacher_id = $1
       ORDER BY c.class_name ASC, s.name ASC, st.full_name ASC
     `,
       [parseInt(teacherId)],
@@ -374,17 +376,33 @@ export const marksService = {
     // 3. Verify teacher is assigned to teach this subject in this class (Requirements 7.1, 7.2)
     const assignmentResult = await pool.query(
       `
-      SELECT tcs.teacher_class_subject_id
-      FROM teacher_class_subject tcs
-      JOIN class_subjects cs ON tcs.class_subject_id = cs.class_subject_id
-      WHERE tcs.teacher_id = $1
-        AND cs.class_id = $2
-        AND cs.subject_id = $3
+      SELECT
+        c.homeroom_teacher_id,
+        EXISTS (
+          SELECT 1
+          FROM teacher_class_subject tcs
+          JOIN class_subjects cs ON tcs.class_subject_id = cs.class_subject_id
+          WHERE tcs.teacher_id = $1
+            AND cs.class_id = $2
+            AND cs.subject_id = $3
+        ) AS is_assigned
+      FROM classes c
+      WHERE c.class_id = $2
+      LIMIT 1
     `,
       [parseInt(teacherId), classId, parseInt(subjectId)],
     );
 
     if (assignmentResult.rows.length === 0) {
+      throw new ApiError(404, "Class not found for selected enrollment");
+    }
+
+    const authRow = assignmentResult.rows[0];
+    const isAssigned = Boolean(authRow.is_assigned);
+    const isHomeroomTeacher =
+      parseInt(authRow.homeroom_teacher_id, 10) === parseInt(teacherId, 10);
+
+    if (!isAssigned && !isHomeroomTeacher) {
       throw new ApiError(
         403,
         "Teacher not authorized to submit marks for this subject in this class",
@@ -476,7 +494,7 @@ export const marksService = {
     // Get mark with related data
     const markResult = await pool.query(
       `
-      SELECT m.mark_id, m.teacher_id, m.subject_id, c.results_published
+      SELECT m.mark_id, m.teacher_id, m.subject_id, e.class_id, c.results_published
       FROM marks m
       JOIN student_enrollments e ON m.enrollment_id = e.enrollment_id
       JOIN classes c ON e.class_id = c.class_id
@@ -496,9 +514,29 @@ export const marksService = {
       throw new ApiError(409, "Results already published for class");
     }
 
-    // Check if teacher owns this mark
-    if (mark.teacher_id !== parseInt(teacherId)) {
-      throw new ApiError(403, "Teacher cannot modify another teacher's mark");
+    // Verify teacher is assigned to this subject in the class
+    const assignmentResult = await pool.query(
+      `
+      SELECT tcs.teacher_class_subject_id
+      FROM teacher_class_subject tcs
+      JOIN class_subjects cs ON tcs.class_subject_id = cs.class_subject_id
+      WHERE tcs.teacher_id = $1
+        AND cs.class_id = $2
+        AND cs.subject_id = $3
+      LIMIT 1
+    `,
+      [
+        parseInt(teacherId, 10),
+        parseInt(mark.class_id, 10),
+        parseInt(mark.subject_id, 10),
+      ],
+    );
+
+    if (assignmentResult.rows.length === 0) {
+      throw new ApiError(
+        403,
+        "Teacher not authorized to update marks for this subject in this class",
+      );
     }
 
     const subjectResult = await pool.query(
@@ -525,8 +563,8 @@ export const marksService = {
 
     // Update mark
     await pool.query(
-      "UPDATE marks SET mark_obtained = $1, submitted_at = CURRENT_TIMESTAMP WHERE mark_id = $2",
-      [parsedMark, parseInt(markId, 10)],
+      "UPDATE marks SET mark_obtained = $1, teacher_id = $2, submitted_at = CURRENT_TIMESTAMP WHERE mark_id = $3",
+      [parsedMark, parseInt(teacherId, 10), parseInt(markId, 10)],
     );
 
     return await marksService.getById(markId);

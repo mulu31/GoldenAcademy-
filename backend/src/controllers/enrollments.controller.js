@@ -34,6 +34,11 @@ export const enrollmentsController = {
 
   promoteStudents: catchAsync(async (req, res) => {
     const data = await enrollmentsService.promoteStudents(req.body);
-    return sendResponse(res, 200, "Students promoted", data);
+    return sendResponse(
+      res,
+      200,
+      `Promotion completed: ${data.promotedCount} student(s) moved from ${data.currentClass.className} (${data.currentClass.term.academicYear} Term ${data.currentClass.term.semester}) to ${data.nextClass.className} (${data.nextClass.term.academicYear} Term ${data.nextClass.term.semester}).`,
+      data,
+    );
   }),
 };

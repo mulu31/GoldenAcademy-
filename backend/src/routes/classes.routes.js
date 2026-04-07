@@ -1,7 +1,10 @@
 import { Router } from "express";
 import { classesController } from "../controllers/classes.controller.js";
 import { authenticate } from "../middlewares/auth.middleware.js";
-import { authorize } from "../middlewares/authorize.middleware.js";
+import {
+  authorize,
+  authorizeHomeroomTeacher,
+} from "../middlewares/authorize.middleware.js";
 import { validateRequest } from "../middlewares/validate.middleware.js";
 import { auditLog } from "../middlewares/audit.middleware.js";
 import {
@@ -57,7 +60,7 @@ router.get(
 
 router.post(
   "/",
-  authorize("SYSTEM_ADMIN", "REGISTRAR"),
+  authorize("SYSTEM_ADMIN", "REGISTRAR", "DEPARTMENT_ADMIN"),
   createClass,
   validateRequest,
   auditLog("CREATE", "CLASS"),
@@ -75,7 +78,8 @@ router.put(
 
 router.post(
   "/:id/publish-results",
-  authorize("SYSTEM_ADMIN", "REGISTRAR"),
+  authorize("SYSTEM_ADMIN", "REGISTRAR", "DEPARTMENT_ADMIN", "TEACHER"),
+  authorizeHomeroomTeacher,
   publishResults,
   validateRequest,
   auditLog("PUBLISH_RESULTS", "CLASS"),

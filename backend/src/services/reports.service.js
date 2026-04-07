@@ -46,15 +46,19 @@ export const reportsService = {
       }
 
       conditions.push(
-        `EXISTS (
-          SELECT 1
-          FROM class_subjects csf
-          JOIN teacher_class_subject tcsf ON tcsf.class_subject_id = csf.class_subject_id
-          WHERE csf.class_id = c.class_id
-            AND tcsf.teacher_id = $${paramCount++}
+        `(
+          c.homeroom_teacher_id = $${paramCount}
+          OR EXISTS (
+            SELECT 1
+            FROM class_subjects csf
+            JOIN teacher_class_subject tcsf ON tcsf.class_subject_id = csf.class_subject_id
+            WHERE csf.class_id = c.class_id
+              AND tcsf.teacher_id = $${paramCount}
+          )
         )`,
       );
       params.push(parseInt(teacherId, 10));
+      paramCount += 1;
     }
 
     const whereClause = conditions.length

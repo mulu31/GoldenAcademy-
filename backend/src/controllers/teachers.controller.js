@@ -101,4 +101,36 @@ export const teachersController = {
       homeroomClass,
     );
   }),
+
+  getMyAssignments: catchAsync(async (req, res) => {
+    const teacherId = req.user.teacher?.teacherId;
+
+    if (!teacherId) {
+      throw new ApiError(403, "Teacher profile required");
+    }
+
+    const assignments = await teachersService.getAssignments(teacherId);
+    return sendResponse(
+      res,
+      200,
+      "Teacher assignments retrieved successfully",
+      assignments,
+    );
+  }),
+
+  getMyHomeroomClass: catchAsync(async (req, res) => {
+    const teacherId = req.user.teacher?.teacherId;
+
+    if (!teacherId) {
+      throw new ApiError(403, "Teacher profile required");
+    }
+
+    const homeroomClass = await teachersService.getHomeroomClass(teacherId);
+    return sendResponse(
+      res,
+      200,
+      "Homeroom class retrieved successfully",
+      homeroomClass,
+    );
+  }),
 };

@@ -6,10 +6,12 @@ import Table from "../common/Table";
 
 const StudentSearch = ({ onSearch, results = [], loading = false }) => {
   const [searchTerm, setSearchTerm] = useState("");
+  const [hasSearched, setHasSearched] = useState(false);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    onSearch(searchTerm);
+    setHasSearched(true);
+    await onSearch(searchTerm);
   };
 
   return (
@@ -17,7 +19,7 @@ const StudentSearch = ({ onSearch, results = [], loading = false }) => {
       <form onSubmit={handleSubmit} className="flex gap-2">
         <div className="flex-1">
           <Input
-            placeholder="Search by name or school ID..."
+            placeholder="Search by student ID, school ID, or name (partial/case-insensitive)"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
           />
@@ -43,6 +45,13 @@ const StudentSearch = ({ onSearch, results = [], loading = false }) => {
           pageSize={10}
         />
       )}
+
+      {hasSearched && !loading && results.length === 0 && searchTerm.trim() ? (
+        <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          No students matched "{searchTerm}". Try another part of ID, school ID,
+          or name.
+        </div>
+      ) : null}
     </div>
   );
 };

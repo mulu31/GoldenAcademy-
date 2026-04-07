@@ -17,6 +17,8 @@ const teacherApi = {
   },
   removeFromSubject: (teacherId, classSubjectId) =>
     axiosInstance.delete(`/teachers/${teacherId}/assign/${classSubjectId}`),
+  getMyAssignments: () => axiosInstance.get("/teachers/me/assignments"),
+  getMyHomeroomClass: () => axiosInstance.get("/teachers/me/homeroom-class"),
   getAssignments: (teacherId) =>
     axiosInstance.get(`/teachers/${teacherId}/assignments`),
   getHomeroomClass: (teacherId) =>

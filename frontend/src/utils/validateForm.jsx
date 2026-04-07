@@ -56,19 +56,27 @@ export const validateForm = (formType, values) => {
   }
 
   if (formType === "class") {
-    required("class_name", "Class name");
     required("grade", "Grade");
+    required("section", "Section");
     required("term_id", "Term");
     required("homeroom_teacher_id", "Homeroom teacher");
+
+    if (
+      values.grade &&
+      !["9", "10", "11", "12"].includes(String(values.grade))
+    ) {
+      errors.grade = "Grade must be one of 9, 10, 11, 12";
+    }
+
+    if (
+      values.section &&
+      !/^[A-Z]$/.test(String(values.section).toUpperCase())
+    ) {
+      errors.section = "Section must be a single letter A-Z";
+    }
   }
 
   if (formType === "student") {
-    const studentIdKey = Object.prototype.hasOwnProperty.call(
-      values,
-      "studentSchoolId",
-    )
-      ? "studentSchoolId"
-      : "student_school_id";
     const studentNameKey = Object.prototype.hasOwnProperty.call(
       values,
       "fullName",
@@ -76,7 +84,6 @@ export const validateForm = (formType, values) => {
       ? "fullName"
       : "full_name";
 
-    required(studentIdKey, "Student ID");
     required(studentNameKey, "Student name");
     required("gender", "Gender");
   }

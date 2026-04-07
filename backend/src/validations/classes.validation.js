@@ -1,18 +1,28 @@
 import { body, param } from "express-validator";
 
 export const createClass = [
-  body("className")
+  body("section")
     .trim()
     .notEmpty()
-    .withMessage("Class name is required")
+    .withMessage("Section is required")
+    .isLength({ min: 1, max: 1 })
+    .withMessage("Section must be one letter")
+    .matches(/^[A-Za-z]$/)
+    .withMessage("Section must be A-Z")
+    .customSanitizer((value) => String(value).toUpperCase()),
+  body("className")
+    .optional()
+    .trim()
+    .notEmpty()
+    .withMessage("Class name cannot be empty")
     .isLength({ min: 1, max: 100 })
     .withMessage("Class name must be between 1 and 100 characters"),
   body("grade")
     .trim()
     .notEmpty()
     .withMessage("Grade is required")
-    .isLength({ min: 1, max: 50 })
-    .withMessage("Grade must be between 1 and 50 characters"),
+    .isIn(["9", "10", "11", "12"])
+    .withMessage("Grade must be one of 9, 10, 11, 12"),
   body("termId").isInt({ min: 1 }).withMessage("Valid term ID is required"),
   body("homeroomTeacherId")
     .optional()
@@ -22,6 +32,16 @@ export const createClass = [
 
 export const updateClass = [
   param("id").isInt({ min: 1 }).withMessage("Valid class ID is required"),
+  body("section")
+    .optional()
+    .trim()
+    .notEmpty()
+    .withMessage("Section cannot be empty")
+    .isLength({ min: 1, max: 1 })
+    .withMessage("Section must be one letter")
+    .matches(/^[A-Za-z]$/)
+    .withMessage("Section must be A-Z")
+    .customSanitizer((value) => String(value).toUpperCase()),
   body("className")
     .optional()
     .trim()
@@ -34,8 +54,8 @@ export const updateClass = [
     .trim()
     .notEmpty()
     .withMessage("Grade cannot be empty")
-    .isLength({ min: 1, max: 50 })
-    .withMessage("Grade must be between 1 and 50 characters"),
+    .isIn(["9", "10", "11", "12"])
+    .withMessage("Grade must be one of 9, 10, 11, 12"),
   body("termId")
     .optional()
     .isInt({ min: 1 })

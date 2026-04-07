@@ -14,6 +14,13 @@ router.use(authenticate);
 // List all marks (with optional filters)
 router.get("/", marksController.list);
 
+// Get marks for authenticated teacher
+router.get(
+  "/mine",
+  authorize("SYSTEM_ADMIN", "DEPARTMENT_ADMIN", "REGISTRAR", "TEACHER"),
+  marksController.getMine,
+);
+
 // Get mark by ID
 router.get(
   "/:id",

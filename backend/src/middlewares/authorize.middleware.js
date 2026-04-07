@@ -168,11 +168,19 @@ export const authorizeTeacherForClass = catchAsync(async (req, _res, next) => {
 
   const result = await pool.query(
     `
-      SELECT tcs.teacher_class_subject_id
-      FROM teacher_class_subject tcs
-      JOIN class_subjects cs ON tcs.class_subject_id = cs.class_subject_id
-      WHERE tcs.teacher_id = $1
-        AND cs.class_id = $2
+      SELECT 1
+      FROM classes c
+      WHERE c.class_id = $2
+        AND (
+          c.homeroom_teacher_id = $1
+          OR EXISTS (
+            SELECT 1
+            FROM teacher_class_subject tcs
+            JOIN class_subjects cs ON tcs.class_subject_id = cs.class_subject_id
+            WHERE tcs.teacher_id = $1
+              AND cs.class_id = $2
+          )
+        )
       LIMIT 1
     `,
     [parseInt(teacherId, 10), parseInt(classId, 10)],
@@ -198,8 +206,12 @@ export const authorizeHomeroomTeacher = catchAsync(async (req, _res, next) => {
     return next();
   }
 
-  const { classId } = req.params;
+  const classId = req.params.classId ?? req.params.id;
   const teacherId = req.user.teacher?.teacherId;
+
+  if (!classId) {
+    throw new ApiError(400, "Class ID is required for homeroom check");
+  }
 
   if (teacherId === undefined || teacherId === null) {
     throw new ApiError(403, "Teacher profile required");
@@ -220,7 +232,7 @@ export const authorizeHomeroomTeacher = catchAsync(async (req, _res, next) => {
   }
 
   const classData = result.rows[0];
-  if (classData.homeroom_teacher_id !== teacherId) {
+  if (parseInt(classData.homeroom_teacher_id, 10) !== parseInt(teacherId, 10)) {
     throw new ApiError(403, "Only homeroom teacher can perform this action");
   }
 

@@ -51,6 +51,17 @@ export const marksController = {
     return sendResponse(res, 200, "Teacher marks retrieved", data);
   }),
 
+  getMine: catchAsync(async (req, res) => {
+    const teacherId = req.user.teacher?.teacherId;
+
+    if (!teacherId) {
+      return sendResponse(res, 403, "Teacher profile required", null);
+    }
+
+    const data = await marksService.getByTeacherId(teacherId);
+    return sendResponse(res, 200, "Teacher marks retrieved", data);
+  }),
+
   submitMark: catchAsync(async (req, res) => {
     const isElevatedRole =
       req.user.roles.includes("SYSTEM_ADMIN") ||

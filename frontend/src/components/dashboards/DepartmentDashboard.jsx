@@ -70,7 +70,12 @@ const normalizeAcademicRow = (row = {}) => ({
 
 const DepartmentDashboard = () => {
   const { user } = useAuth();
-  const departmentId = user?.departmentId ?? user?.department_id ?? null;
+  const departmentId =
+    user?.departmentId ??
+    user?.department_id ??
+    user?.teacher?.departmentId ??
+    user?.teacher?.department_id ??
+    null;
   const userRoles = user?.roles || [];
 
   const canDeleteTeacher = userRoles.includes("SYSTEM_ADMIN");
@@ -225,11 +230,14 @@ const DepartmentDashboard = () => {
     onSubmit: async (values) => {
       setSubmitting(true);
       try {
+        const resolvedDepartmentId = asInt(departmentId);
         const payload = {
           name: values.name.trim(),
           code: values.code.trim(),
           totalMark: Number(values.totalMark),
-          departmentId: departmentId ? Number(departmentId) : null,
+          ...(resolvedDepartmentId
+            ? { departmentId: resolvedDepartmentId }
+            : {}),
         };
 
         if (editingSubject) {
@@ -258,7 +266,6 @@ const DepartmentDashboard = () => {
   const teacherForm = useForm({
     initialValues: {
       fullName: "",
-      userId: "",
       email: "",
       password: "",
       departmentId: departmentId ? String(departmentId) : "",
@@ -271,8 +278,7 @@ const DepartmentDashboard = () => {
       if (!values.departmentId)
         formErrors.departmentId = "Department is required";
 
-      const hasUserId = String(values.userId || "").trim().length > 0;
-      if (!editingTeacher && !hasUserId) {
+      if (!editingTeacher) {
         if (!values.email?.trim()) formErrors.email = "Email is required";
         if (!values.password?.trim())
           formErrors.password = "Password is required";
@@ -286,7 +292,6 @@ const DepartmentDashboard = () => {
         if (editingTeacher) {
           await teacherApi.update(editingTeacher.teacherId, {
             fullName: values.fullName.trim(),
-            userId: values.userId ? Number(values.userId) : null,
             departmentId: values.departmentId
               ? Number(values.departmentId)
               : null,
@@ -299,14 +304,9 @@ const DepartmentDashboard = () => {
               ? Number(values.departmentId)
               : null,
             roleName: "TEACHER",
+            email: values.email.trim(),
+            password: values.password,
           };
-
-          if (values.userId) {
-            payload.userId = Number(values.userId);
-          } else {
-            payload.email = values.email.trim();
-            payload.password = values.password;
-          }
 
           await teacherApi.create(payload);
           notify({ type: "success", message: "Teacher created successfully" });
@@ -328,12 +328,9 @@ const DepartmentDashboard = () => {
   });
 
   const studentForm = useForm({
-    initialValues: { studentSchoolId: "", fullName: "", gender: "" },
+    initialValues: { fullName: "", gender: "" },
     validate: (values) => {
       const formErrors = {};
-      if (!values.studentSchoolId?.trim()) {
-        formErrors.studentSchoolId = "School ID is required";
-      }
       if (!values.fullName?.trim())
         formErrors.fullName = "Full name is required";
       if (!["M", "F"].includes(values.gender)) {
@@ -345,7 +342,6 @@ const DepartmentDashboard = () => {
       setSubmitting(true);
       try {
         const payload = {
-          studentSchoolId: values.studentSchoolId.trim(),
           fullName: values.fullName.trim(),
           gender: values.gender,
         };
@@ -591,7 +587,6 @@ const DepartmentDashboard = () => {
     setEditingTeacher(teacher);
     teacherForm.setValues({
       fullName: teacher.fullName,
-      userId: teacher.userId ? String(teacher.userId) : "",
       email: "",
       password: "",
       departmentId: teacher.departmentId ? String(teacher.departmentId) : "",
@@ -617,7 +612,6 @@ const DepartmentDashboard = () => {
   const handleEditStudent = (student) => {
     setEditingStudent(student);
     studentForm.setValues({
-      studentSchoolId: student.studentSchoolId,
       fullName: student.fullName,
       gender: student.gender,
     });
@@ -1010,19 +1004,10 @@ const DepartmentDashboard = () => {
             error={teacherForm.errors.fullName}
             required
           />
-          <Input
-            label="User ID (optional)"
-            name="userId"
-            type="number"
-            value={teacherForm.values.userId}
-            onChange={teacherForm.handleChange}
-            error={teacherForm.errors.userId}
-          />
-
           {!editingTeacher ? (
             <>
               <Input
-                label="Email (required if User ID is empty)"
+                label="Email"
                 name="email"
                 type="email"
                 value={teacherForm.values.email}
@@ -1030,7 +1015,7 @@ const DepartmentDashboard = () => {
                 error={teacherForm.errors.email}
               />
               <Input
-                label="Password (required if User ID is empty)"
+                label="Password"
                 name="password"
                 type="password"
                 value={teacherForm.values.password}
@@ -1090,14 +1075,12 @@ const DepartmentDashboard = () => {
         }}
       >
         <form onSubmit={studentForm.handleSubmit} className="space-y-4">
-          <Input
-            label="School ID"
-            name="studentSchoolId"
-            value={studentForm.values.studentSchoolId}
-            onChange={studentForm.handleChange}
-            error={studentForm.errors.studentSchoolId}
-            required
-          />
+          {!editingStudent ? (
+            <p className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+              School ID is generated automatically by the system when the
+              student is created.
+            </p>
+          ) : null}
           <Input
             label="Full Name"
             name="fullName"

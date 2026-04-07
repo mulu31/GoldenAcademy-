@@ -2,6 +2,30 @@ import pool from "../config/db.js";
 import { ApiError } from "../utils/ApiError.js";
 import { handleDatabaseError } from "../utils/dbErrorHandler.js";
 
+const parseNonNegativeInt = (value, fallback) => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isNaN(parsed) || parsed < 0 ? fallback : parsed;
+};
+
+const MIN_COMPLETION_PERCENT_FOR_PUBLISH = parseNonNegativeInt(
+  process.env.MARK_PUBLISH_MIN_COMPLETION_PERCENT,
+  90,
+);
+const MAX_MISSING_STUDENTS_FOR_PUBLISH = parseNonNegativeInt(
+  process.env.MARK_PUBLISH_MAX_MISSING_STUDENTS,
+  2,
+);
+
+const normalizeSection = (section) => {
+  if (section === undefined || section === null) return null;
+  return String(section).trim().toUpperCase();
+};
+
+const buildClassName = (grade, section) => {
+  if (!grade || !section) return null;
+  return `${String(grade).trim()}${normalizeSection(section)}`;
+};
+
 export const classesService = {
   // Get all classes
   getAll: async () => {
@@ -246,6 +270,14 @@ export const classesService = {
 
   // Create new class
   create: async (data) => {
+    const grade = String(data.grade).trim();
+    const section = normalizeSection(data.section);
+    const className = buildClassName(grade, section);
+
+    if (!className) {
+      throw new ApiError(400, "Grade and section are required");
+    }
+
     const result = await pool.query(
       `
       INSERT INTO classes (class_name, grade, term_id, homeroom_teacher_id, results_published)
@@ -253,8 +285,8 @@ export const classesService = {
       RETURNING class_id
     `,
       [
-        data.class_name,
-        data.grade,
+        className,
+        grade,
         parseInt(data.term_id),
         data.homeroom_teacher_id ? parseInt(data.homeroom_teacher_id) : null,
         data.results_published || false,
@@ -266,17 +298,40 @@ export const classesService = {
 
   // Update class
   update: async (classId, data) => {
+    const currentClass = await classesService.getById(classId);
+    const currentGrade = String(currentClass.grade || "").trim();
+    const currentClassName = String(currentClass.className || "").trim();
+    const currentSection = normalizeSection(
+      currentClassName.startsWith(currentGrade)
+        ? currentClassName.slice(currentGrade.length)
+        : "",
+    );
+
+    const effectiveGrade =
+      data.grade !== undefined ? String(data.grade).trim() : currentGrade;
+    const effectiveSection =
+      data.section !== undefined
+        ? normalizeSection(data.section)
+        : currentSection;
+    const effectiveClassName =
+      data.grade !== undefined || data.section !== undefined
+        ? buildClassName(effectiveGrade, effectiveSection)
+        : undefined;
+
     const updates = [];
     const values = [];
     let paramCount = 1;
 
-    if (data.class_name !== undefined) {
+    if (effectiveClassName !== undefined && effectiveClassName !== null) {
+      updates.push(`class_name = $${paramCount++}`);
+      values.push(effectiveClassName);
+    } else if (data.class_name !== undefined) {
       updates.push(`class_name = $${paramCount++}`);
       values.push(data.class_name);
     }
     if (data.grade !== undefined) {
       updates.push(`grade = $${paramCount++}`);
-      values.push(data.grade);
+      values.push(effectiveGrade);
     }
     if (data.term_id !== undefined) {
       updates.push(`term_id = $${paramCount++}`);
@@ -355,36 +410,89 @@ export const classesService = {
       throw new ApiError(400, "Results are already published for this class");
     }
 
-    // Count actual marks submitted
+    const parsedClassId = parseInt(classId, 10);
+
+    if (parseInt(classData.total_subjects, 10) === 0) {
+      throw new ApiError(
+        400,
+        "Cannot publish results: No subjects are assigned to this class",
+      );
+    }
+
+    if (parseInt(classData.total_students, 10) === 0) {
+      throw new ApiError(
+        400,
+        "Cannot publish results: No students are enrolled in this class",
+      );
+    }
+
+    // Count students who have marks for all class subjects.
+    const completionResult = await pool.query(
+      `
+      SELECT COUNT(*) AS complete_students
+      FROM (
+        SELECT se.enrollment_id
+        FROM student_enrollments se
+        LEFT JOIN marks m ON se.enrollment_id = m.enrollment_id
+        WHERE se.class_id = $1
+        GROUP BY se.enrollment_id
+        HAVING COUNT(DISTINCT m.subject_id) >= $2
+      ) completed
+    `,
+      [parsedClassId, parseInt(classData.total_subjects, 10)],
+    );
+
+    // Keep mark-level completion for dashboard progress details.
     const marksResult = await pool.query(
       `
-      SELECT COUNT(*) as actual_marks
+      SELECT COUNT(*) AS actual_marks
       FROM marks m
       JOIN student_enrollments se ON m.enrollment_id = se.enrollment_id
       WHERE se.class_id = $1
     `,
-      [parseInt(classId)],
+      [parsedClassId],
     );
 
     const totalSubjects = parseInt(classData.total_subjects);
     const totalStudents = parseInt(classData.total_students);
     const expectedMarks = totalSubjects * totalStudents;
     const actualMarks = parseInt(marksResult.rows[0].actual_marks);
+    const completeStudents = parseInt(
+      completionResult.rows[0].complete_students,
+      10,
+    );
+    const pendingStudents = totalStudents - completeStudents;
+    const completionPercent = Math.round(
+      (completeStudents / totalStudents) * 100,
+    );
 
-    if (actualMarks < expectedMarks) {
+    if (
+      pendingStudents > MAX_MISSING_STUDENTS_FOR_PUBLISH ||
+      completionPercent < MIN_COMPLETION_PERCENT_FOR_PUBLISH
+    ) {
       throw new ApiError(
         400,
-        "Cannot publish results: Not all marks have been submitted",
+        `Cannot publish results: ${pendingStudents} student(s) are still missing marks. Minimum completion is ${MIN_COMPLETION_PERCENT_FOR_PUBLISH}% and maximum pending students is ${MAX_MISSING_STUDENTS_FOR_PUBLISH}.`,
       );
     }
 
     // Publish results
     await pool.query(
       "UPDATE classes SET results_published = TRUE, updated_at = CURRENT_TIMESTAMP WHERE class_id = $1",
-      [parseInt(classId)],
+      [parsedClassId],
     );
 
-    return await classesService.getById(classId);
+    return {
+      ...(await classesService.getById(classId)),
+      publishSummary: {
+        totalStudents,
+        completeStudents,
+        pendingStudents,
+        completionPercent,
+        expectedMarks,
+        actualMarks,
+      },
+    };
   },
 
   // Check if all marks are complete for a class
@@ -411,6 +519,24 @@ export const classesService = {
 
     const classData = classResult.rows[0];
 
+    const parsedClassId = parseInt(classId, 10);
+
+    // Count students who have marks for all class subjects.
+    const completionResult = await pool.query(
+      `
+      SELECT COUNT(*) AS complete_students
+      FROM (
+        SELECT se.enrollment_id
+        FROM student_enrollments se
+        LEFT JOIN marks m ON se.enrollment_id = m.enrollment_id
+        WHERE se.class_id = $1
+        GROUP BY se.enrollment_id
+        HAVING COUNT(DISTINCT m.subject_id) >= $2
+      ) completed
+    `,
+      [parsedClassId, parseInt(classData.total_subjects, 10)],
+    );
+
     // Count actual marks submitted
     const marksResult = await pool.query(
       `
@@ -419,20 +545,37 @@ export const classesService = {
       JOIN student_enrollments se ON m.enrollment_id = se.enrollment_id
       WHERE se.class_id = $1
     `,
-      [parseInt(classId)],
+      [parsedClassId],
     );
 
     const totalSubjects = parseInt(classData.total_subjects);
     const totalStudents = parseInt(classData.total_students);
     const expectedMarks = totalSubjects * totalStudents;
     const actualMarks = parseInt(marksResult.rows[0].actual_marks);
+    const completeStudents = parseInt(
+      completionResult.rows[0].complete_students,
+      10,
+    );
+    const pendingStudents = totalStudents - completeStudents;
+    const completionPercent =
+      totalStudents > 0
+        ? Math.round((completeStudents / totalStudents) * 100)
+        : 0;
 
     return {
       complete: actualMarks === expectedMarks,
+      publishable:
+        pendingStudents <= MAX_MISSING_STUDENTS_FOR_PUBLISH &&
+        completionPercent >= MIN_COMPLETION_PERCENT_FOR_PUBLISH,
       expectedMarks,
       actualMarks,
       totalSubjects,
       totalStudents,
+      completeStudents,
+      pendingStudents,
+      completionPercent,
+      minCompletionPercentForPublish: MIN_COMPLETION_PERCENT_FOR_PUBLISH,
+      maxMissingStudentsForPublish: MAX_MISSING_STUDENTS_FOR_PUBLISH,
     };
   },
 };

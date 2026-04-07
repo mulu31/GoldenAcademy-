@@ -2,6 +2,29 @@ import pool from "../config/db.js";
 import { ApiError } from "../utils/ApiError.js";
 import { handleDatabaseError } from "../utils/dbErrorHandler.js";
 
+const parseAcademicYearStart = (academicYear) => {
+  const match = String(academicYear ?? "").match(/^(\d{4})/);
+  return match ? parseInt(match[1], 10) : NaN;
+};
+
+const extractSection = (grade, className) => {
+  const normalizedClassName = String(className ?? "")
+    .trim()
+    .toUpperCase();
+  const normalizedGrade = String(grade ?? "")
+    .trim()
+    .toUpperCase();
+
+  if (normalizedGrade && normalizedClassName.startsWith(normalizedGrade)) {
+    return normalizedClassName
+      .slice(normalizedGrade.length)
+      .replace(/[^A-Z]/g, "");
+  }
+
+  const fallback = normalizedClassName.match(/([A-Z]+)$/);
+  return fallback ? fallback[1] : "";
+};
+
 export const enrollmentsService = {
   /**
    * List enrollments with optional filtering
@@ -477,26 +500,95 @@ export const enrollmentsService = {
       );
     }
 
-    // Promotion policy: Term I -> Term II in the same academic year only,
-    // and only after Term I results are published.
-    if (currentClass.term.semester !== "I") {
-      throw new ApiError(400, "Promotion can only start from a Term I class");
-    }
-
-    if (
-      nextTerm.semester !== "II" ||
-      nextTerm.academicYear !== currentClass.term.academicYear
-    ) {
-      throw new ApiError(
-        400,
-        "Next term for promotion must be Term II of the same academic year",
-      );
-    }
-
     if (!currentClass.resultsPublished) {
       throw new ApiError(
         400,
-        "Cannot promote students before Term I results are published",
+        `Cannot promote from ${currentClass.className} until results are published for Term ${currentClass.term.semester}`,
+      );
+    }
+
+    const currentSemester = String(currentClass.term.semester).toUpperCase();
+    const nextSemester = String(nextTerm.semester).toUpperCase();
+    const currentGrade = parseInt(currentClass.grade, 10);
+    const nextGrade = parseInt(nextClass.grade, 10);
+    const currentSection = extractSection(
+      currentClass.grade,
+      currentClass.className,
+    );
+    const nextSection = extractSection(nextClass.grade, nextClass.className);
+
+    if (currentSemester === "I") {
+      if (
+        nextSemester !== "II" ||
+        nextTerm.academicYear !== currentClass.term.academicYear
+      ) {
+        throw new ApiError(
+          400,
+          `Invalid promotion path. ${currentClass.className} Term I can only move to Term II of academic year ${currentClass.term.academicYear}.`,
+        );
+      }
+
+      if (nextGrade !== currentGrade) {
+        throw new ApiError(
+          400,
+          `Invalid grade jump. Term I promotion must stay in Grade ${currentClass.grade}.`,
+        );
+      }
+
+      if (currentSection && nextSection && currentSection !== nextSection) {
+        throw new ApiError(
+          400,
+          `Invalid section jump. Term I promotion must keep the same section (${currentSection}).`,
+        );
+      }
+    } else if (currentSemester === "II") {
+      if (currentGrade >= 12) {
+        throw new ApiError(
+          400,
+          "Grade 12 Term II students cannot be promoted to another class. They complete the program.",
+        );
+      }
+
+      const currentYearStart = parseAcademicYearStart(
+        currentClass.term.academicYear,
+      );
+      const nextYearStart = parseAcademicYearStart(nextTerm.academicYear);
+
+      if (nextSemester !== "I") {
+        throw new ApiError(
+          400,
+          `Invalid term jump. ${currentClass.className} Term II can only move to Term I of the next academic year.`,
+        );
+      }
+
+      if (
+        Number.isFinite(currentYearStart) &&
+        Number.isFinite(nextYearStart) &&
+        nextYearStart !== currentYearStart + 1
+      ) {
+        throw new ApiError(
+          400,
+          `Invalid academic year jump. Term II promotion must move to the next academic year after ${currentClass.term.academicYear}.`,
+        );
+      }
+
+      if (nextGrade !== currentGrade + 1) {
+        throw new ApiError(
+          400,
+          `Invalid grade jump. ${currentClass.className} Term II must move to Grade ${currentGrade + 1}.`,
+        );
+      }
+
+      if (currentSection && nextSection && currentSection !== nextSection) {
+        throw new ApiError(
+          400,
+          `Invalid section jump. Term II promotion must keep the same section (${currentSection}).`,
+        );
+      }
+    } else {
+      throw new ApiError(
+        400,
+        `Invalid current term ${currentClass.term.semester}. Promotion supports only Term I or Term II classes.`,
       );
     }
 
@@ -537,7 +629,7 @@ export const enrollmentsService = {
         .join(", ");
       throw new ApiError(
         409,
-        `Cannot promote: ${conflictingEnrollmentsResult.rows.length} student(s) already enrolled in next term: ${conflictNames}`,
+        `Promotion blocked: ${conflictingEnrollmentsResult.rows.length} student(s) already enrolled in target term ${nextTerm.academicYear} Term ${nextTerm.semester}: ${conflictNames}`,
       );
     }
 

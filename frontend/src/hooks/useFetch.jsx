@@ -7,6 +7,7 @@ import {
 
 const normalizeData = (response, mode) => {
   if (mode === "payload") return extractPayload(response);
+  if (Array.isArray(response)) return response;
   return extractArray(response);
 };
 

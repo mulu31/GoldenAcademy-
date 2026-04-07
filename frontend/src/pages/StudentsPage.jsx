@@ -83,7 +83,6 @@ const StudentsPage = () => {
     setSaving(true);
     try {
       await studentApi.create({
-        studentSchoolId: values.studentSchoolId,
         fullName: values.fullName,
         gender: values.gender,
       });
@@ -158,7 +157,7 @@ const StudentsPage = () => {
           Register Student
         </h3>
         <StudentForm
-          initialValues={{ studentSchoolId: "", fullName: "", gender: "" }}
+          initialValues={{ fullName: "", gender: "" }}
           onSubmit={handleCreateStudent}
           loading={saving}
         />

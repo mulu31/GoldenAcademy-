@@ -23,6 +23,20 @@ router.use(authenticate);
 // List teachers (filtered by department for DEPARTMENT_ADMIN)
 router.get("/", teachersController.list);
 
+// Get authenticated teacher assignments
+router.get(
+  "/me/assignments",
+  authorize("SYSTEM_ADMIN", "DEPARTMENT_ADMIN", "REGISTRAR", "TEACHER"),
+  teachersController.getMyAssignments,
+);
+
+// Get authenticated teacher homeroom class
+router.get(
+  "/me/homeroom-class",
+  authorize("SYSTEM_ADMIN", "DEPARTMENT_ADMIN", "REGISTRAR", "TEACHER"),
+  teachersController.getMyHomeroomClass,
+);
+
 // Get teacher by ID
 router.get("/:id", getTeacherById, validateRequest, teachersController.getById);
 

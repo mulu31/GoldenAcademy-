@@ -7,6 +7,8 @@ const Input = ({
   placeholder,
   error,
   required = false,
+  readOnly = false,
+  disabled = false,
 }) => {
   return (
     <div className="space-y-1">
@@ -25,6 +27,8 @@ const Input = ({
         type={type}
         value={value ?? ""}
         onChange={onChange}
+        readOnly={readOnly}
+        disabled={disabled}
         placeholder={placeholder}
         className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-800 outline-none transition duration-200 placeholder:text-slate-400 ${
           error
