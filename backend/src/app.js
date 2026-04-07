@@ -1,4 +1,7 @@
 import express from "express";
+import path from "path";
+import { existsSync } from "fs";
+import { fileURLToPath } from "url";
 import cors from "cors";
 import helmet from "helmet";
 import compression from "compression";
@@ -8,6 +11,9 @@ import { loggerMiddleware } from "./middlewares/logger.middleware.js";
 import { errorHandler, notFound } from "./middlewares/error.middleware.js";
 
 const app = express();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const frontendDistPath = path.resolve(__dirname, "../../frontend/dist");
 
 const corsOptions = {
   origin: (origin, callback) => {
@@ -39,6 +45,16 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.use("/api", routes);
+
+if (env.nodeEnv === "production" && existsSync(frontendDistPath)) {
+  app.use(express.static(frontendDistPath));
+
+  // Keep API routes under /api while letting SPA routes resolve to index.html.
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api")) return next();
+    return res.sendFile(path.join(frontendDistPath, "index.html"));
+  });
+}
 
 app.use(notFound);
 app.use(errorHandler);

@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "build": "npm install && npm --prefix backend install && npm --prefix frontend install --include=dev && npm --prefix backend run build --if-present && npm --prefix frontend run build",
-    "start": "concurrently -k -n BACKEND,FRONTEND -c green,cyan \"npm --prefix backend run start\" \"npm --prefix frontend run start\""
+    "start": "npm --prefix backend run start"
   },
   "repository": {
     "type": "git",
@@ -18,8 +18,5 @@
   "bugs": {
     "url": "https://github.com/mulu31/GoldenAcademy-/issues"
   },
-  "homepage": "https://github.com/mulu31/GoldenAcademy-#readme",
-  "dependencies": {
-    "concurrently": "^9.2.1"
-  }
+  "homepage": "https://github.com/mulu31/GoldenAcademy-#readme"
 }
