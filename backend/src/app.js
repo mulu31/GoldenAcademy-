@@ -50,7 +50,7 @@ if (existsSync(frontendDistPath)) {
   app.use(express.static(frontendDistPath));
 
   // Keep API routes under /api while letting SPA routes resolve to index.html.
-  app.get("*", (req, res, next) => {
+  app.get("/{*splat}", (req, res, next) => {
     if (req.path.startsWith("/api")) return next();
     return res.sendFile(path.join(frontendDistPath, "index.html"));
   });
