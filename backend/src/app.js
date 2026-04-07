@@ -46,7 +46,7 @@ app.get("/api/health", (_req, res) => {
 
 app.use("/api", routes);
 
-if (env.nodeEnv === "production" && existsSync(frontendDistPath)) {
+if (existsSync(frontendDistPath)) {
   app.use(express.static(frontendDistPath));
 
   // Keep API routes under /api while letting SPA routes resolve to index.html.
